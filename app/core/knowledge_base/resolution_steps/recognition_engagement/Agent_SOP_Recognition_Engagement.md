@@ -21,6 +21,7 @@
 | `get_karma_event_status` | `(email, event_id)` | Fetch whether karma points were credited for a specific event (SOP-RE1 Flow B STEP 1) |
 | `get_user_ehrms_details` | `(email)` | Fetch `ehrms_id` / `external_system_name` from `profileDetails.additionalProperties` via the User Search API (SOP-RE3 STEP 1) |
 | `get_mdo_details` | `(email)` | Fetch the user's MDO Admin contact (Organization, Name, Email) when eHRMS mapping data is missing (SOP-RE3 STEP 1) |
+| `get_weekly_clap_status` | `(email)` | Fetch 12 weeks of platform time-spent and diagnose a weekly-clap reset — precomputes the w1→w12 threshold scan (SOP-RE2 STEP 1/2) |
 
 ---
 ---
@@ -132,7 +133,57 @@ No tools. Resolved — informational close: guide the user to the course's TOC p
 
 # SOP-RE2: Weekly Claps Issue
 
-**Status:** Not yet defined — placeholder.
+Adapted from the UC-WC chatbot SOP / API Integration Guide (single-pass, ask-once-then-close
+instead of a multi-turn chat loop; "raise a Zoho ticket" maps to `escalate=true` + reason on
+the already-open ticket). Covers all three ticket phrasings — "not updated", "reset to
+zero", "not credited" — as one flow: they all resolve via the same 12-week scan.
+
+**STEP 1 — Fetch and diagnose.** `get_weekly_clap_status(email)`. The tool internally:
+fetches the user's `rootOrgId` (via the private user search API), then calls
+`/api/chatbot/v2/insights` for 12 weeks of platform time spent (`w1` = most recent week,
+`w12` = oldest available), and scans `w1 → w12` for the first week with `minutes < 60` (the
+60-minute weekly threshold that maintains a clap). Returns one of four `status` values.
+
+| status | Meaning | Action |
+|---|---|---|
+| `not_found` | User profile could not be resolved | Resolved — inform the user their profile could not be verified; no ticket. |
+| `no_activity_data` | Insights API 404, or all 12 weeks null | Resolved — inform the user no activity data was found; no ticket. |
+| `api_error` | Insights API failed/timed out | Resolved — ask the user to retry later; no ticket. |
+| `reset_found` | First week `< 60` min found (`reset_week`) | → STEP 2 |
+| `discrepancy` | All 12 weeks `>= 60` min | **escalate=true** — "Weekly Clap Discrepancy — Threshold Met But Clap Not Credited". |
+
+**STEP 2 — Explain the reset / detect disagreement.** On `reset_found`, tell the user the
+exact week (`reset_week.label`) and minutes spent (`reset_week.minutes`), and that the
+60-minute weekly rule caused the reset. Since this system is single-pass (no live
+back-and-forth), "the user disagrees" is inferred from the ticket message itself — not a
+follow-up turn:
+- Ticket message reads as a plain report (no prior explanation referenced/disputed) →
+  Resolved. Close. No ticket.
+- Ticket message itself already disputes/rejects a prior reset explanation (e.g. a
+  reopened ticket, or text explicitly rejecting the 60-minute rule as applied to them) →
+  **escalate=true** — "Weekly Clap Issue — User Disputes Reset Explanation".
+
+## Edge Case — Streak older than 12 weeks
+
+The Insights API covers only the last 12 weeks. If the user's claimed clap streak predates
+that window, the reset point is outside the available data and `get_weekly_clap_status`
+will report `status: "discrepancy"` (no week `< 60` found in the 12 it can see) — handled
+identically to STEP 1's discrepancy branch. No separate tool support exists for tracing
+further back.
+
+---
+
+## SOP-RE2 Outcome Rules — Quick Reference
+
+| Scenario | Escalate? |
+|----------|:-------------:|
+| `not_found` — profile unresolved | ❌ |
+| `no_activity_data` — 404 or all weeks null | ❌ |
+| `api_error` — insights API failed | ❌ |
+| `reset_found`, ticket reads as plain report | ❌ |
+| `reset_found`, ticket disputes a prior explanation | ✅ |
+| `discrepancy` — all 12 weeks ≥ 60 min | ✅ |
+| Streak older than 12 weeks (surfaces as `discrepancy`) | ✅ |
 
 ---
 ---

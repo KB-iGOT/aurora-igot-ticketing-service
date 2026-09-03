@@ -14,7 +14,9 @@ Covers SOP workflows from Agent_SOP_Recognition_Engagement.md:
            get_karma_course_status  → STEP 1, STEP 2/3, Edge Case 1
            get_karma_event_status   → STEP 1 credited check
 
-  SOP-RE2  Weekly Claps Issue                       → tools TBD
+  SOP-RE2  Weekly Claps Issue
+           get_weekly_clap_status   → STEP 1/2 (12-week insights fetch + reset/
+                                        discrepancy diagnosis, single tool call)
   SOP-RE3  Learning Hours Issue - eHRMS             → tools TBD
   SOP-RE4  Learning Hours Issue - Shiksha Path      → tools TBD
   SOP-RE5  Learning Hours Issue - SPARROW / APAR    → tools TBD
@@ -32,7 +34,7 @@ it — verify against a real response before relying on this in production.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from langchain.tools import tool
@@ -494,6 +496,140 @@ def get_user_ehrms_details(email: str) -> str:
                             "_spoc_replacements": {"{{USER_EMAIL}}": email}})
 
 
+# ── SOP-RE2 STEP 1/2 — weekly clap 12-week insights + reset diagnosis ──────
+
+def _resolve_user_id_and_root_org(email: str) -> tuple:
+    """Resolve an email to (user_id, root_org_id) via the private user search API.
+
+    Used only by get_weekly_clap_status — the Insights API needs both: user_id
+    for the x-authenticated-userid header, root_org_id for the organisations filter.
+    """
+    url = f"{IGOT_API_HOST_URL}/api/private/user/v1/search"
+    headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": "application/json"}
+    payload = {"request": {"filters": {"email": email}}}
+    resp = requests.post(url, json=payload, headers=headers, timeout=10)
+    resp.raise_for_status()
+    content = resp.json().get("result", {}).get("response", {}).get("content", [])
+    if not content:
+        return None, None
+    return content[0].get("id"), content[0].get("rootOrgId")
+
+
+@tool
+def get_weekly_clap_status(email: str) -> str:
+    """Fetch the last 12 weeks of platform time-spent and diagnose a weekly-clap
+    reset, in one call. Covers all three ticket phrasings from SOP-RE2 ("not
+    updated", "reset to zero", "not credited") — they all resolve to the same
+    12-week backward scan.
+
+    A weekly clap is maintained only if the user spends >= 60 minutes on the
+    platform that week; otherwise it resets to zero. Scans w1 (most recent
+    week) through w12 (oldest available), stopping at the first week below the
+    60-minute threshold — that week is the legitimate reset point. If none of
+    the 12 weeks falls below 60 minutes, the reset has no explanation within
+    the available data (a discrepancy).
+
+    Returns:
+      status — one of:
+        "not_found"         — user profile could not be resolved from email.
+        "no_activity_data"  — insights API returned 404, or all 12 weeks are
+                               null (no data at all). Informational only — do
+                               NOT escalate; tell the user no activity data
+                               was found.
+        "api_error"         — insights API failed/timed out. Informational
+                               only — do NOT escalate; ask the user to retry
+                               later.
+        "reset_found"       — first week (scanning w1->w12) with minutes < 60.
+                               See `reset_week` for its label/minutes — explain
+                               this to the user as the legitimate reset cause.
+        "discrepancy"       — all 12 weeks had minutes >= 60. No legitimate
+                               reset explanation exists in the available data
+                               — this is the "threshold met but clap not
+                               credited" case.
+      total_claps — current weekly clap count (for the reply / ticket context).
+      reset_week  — {week, label, minutes} when status == "reset_found", else null.
+      all_weeks   — full list of {week, label, minutes} for w1..w12 (label is
+                    null if it could not be derived), for ticket context on
+                    escalation.
+    """
+    try:
+        user_id, root_org_id = _resolve_user_id_and_root_org(email)
+        if not user_id or not root_org_id:
+            return json.dumps({"found": False, "status": "not_found",
+                                "message": "User profile not found.",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+        url = f"{IGOT_API_HOST_URL}/api/chatbot/v2/insights"
+        headers = {
+            "Authorization": f"Bearer {IGOT_KEY}",
+            "x-authenticated-userid": user_id,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "request": {
+                "filters": {
+                    "primaryCategory": "programs",
+                    "organisations": ["across", root_org_id],
+                }
+            }
+        }
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=15)
+        except requests.RequestException as e:
+            logger.warning(f"[recognition_engagement_tools] insights API request error: {e}")
+            return json.dumps({"found": True, "status": "api_error",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+        if resp.status_code == 404:
+            return json.dumps({"found": True, "status": "no_activity_data",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+        if resp.status_code >= 500:
+            return json.dumps({"found": True, "status": "api_error",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+        resp.raise_for_status()
+
+        weekly = resp.json().get("result", {}).get("response", {}).get("weekly-claps", {})
+        total_claps = weekly.get("total_claps")
+        # endDate is the end of w1 (most recent week) — startDate is the start of the
+        # oldest present week, i.e. the whole window's boundary, NOT one week's width.
+        # Each week is anchored 7 days back from endDate, not derived from the
+        # startDate/endDate span (which covers all present weeks, not just one).
+        base_end = _parse_credit_date(weekly.get("endDate"))
+
+        all_weeks = []
+        for i in range(1, 13):
+            minutes = (weekly.get(f"w{i}") or {}).get("timespent")
+            label = None
+            if base_end:
+                w_end = base_end - timedelta(days=7 * (i - 1))
+                w_start = w_end - timedelta(days=6)
+                label = f"{w_start.strftime('%d %b')} - {w_end.strftime('%d %b %Y')}"
+            all_weeks.append({"week": f"w{i}", "label": label, "minutes": minutes})
+
+        if all(w["minutes"] is None for w in all_weeks):
+            return json.dumps({"found": True, "status": "no_activity_data",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+        reset_week = next(
+            (w for w in all_weeks if w["minutes"] is not None and w["minutes"] < 60), None)
+
+        result = {
+            "email": "{{USER_EMAIL}}",
+            "found": True,
+            "status": "reset_found" if reset_week else "discrepancy",
+            "total_claps": total_claps,
+            "reset_week": reset_week,
+            "all_weeks": all_weeks,
+            "_spoc_replacements": {"{{USER_EMAIL}}": email},
+        }
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"[recognition_engagement_tools] get_weekly_clap_status error: {e}")
+        return json.dumps({"found": False, "status": "api_error", "error": str(e),
+                            "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+
 # ── Convenience list for the subgraph ─────────────────────────────────────────
 
 def get_recognition_engagement_tools() -> list:
@@ -506,4 +642,5 @@ def get_recognition_engagement_tools() -> list:
         get_karma_event_status,    # SOP-RE1 Flow B STEP 1 credited check
         get_user_ehrms_details,    # SOP-RE3 STEP 1.1 eHRMS mapping check
         get_mdo_details,           # SOP-RE3 STEP 1.3/1.4 MDO contact-share
+        get_weekly_clap_status,    # SOP-RE2 STEP 1/2 — 12-week reset diagnosis
     ]
