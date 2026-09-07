@@ -45,7 +45,7 @@ class RecognitionEngagementSubgraph(BaseSubgraph):
     # "there" because the name lookup at intake fails. Fix it here by grabbing
     # the first name from a tool result we already have, instead of the user.
 
-    _NAME_SOURCE_TOOLS = ("get_user_ehrms_details",)
+    _NAME_SOURCE_TOOLS = ("get_user_first_name", "get_user_profile")
 
     def execute_node(self, state: TicketState) -> TicketState:
         result = super().execute_node(state)

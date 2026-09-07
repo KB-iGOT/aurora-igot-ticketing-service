@@ -17,9 +17,22 @@ Covers SOP workflows from Agent_SOP_Recognition_Engagement.md:
   SOP-RE2  Weekly Claps Issue
            get_weekly_clap_status   → STEP 1/2 (12-week insights fetch + reset/
                                         discrepancy diagnosis, single tool call)
-  SOP-RE3  Learning Hours Issue - eHRMS             → tools TBD
-  SOP-RE4  Learning Hours Issue - Shiksha Path      → tools TBD
-  SOP-RE5  Learning Hours Issue - SPARROW / APAR    → tools TBD
+  SOP-RE3  Learning Hours Issue - eHRMS
+           get_user_ehrms_details   → STEP 1 eHRMS mapping check
+           get_mdo_details          → STEP 1 MDO contact-share (missing mapping)
+           get_user_first_name      → greeting name only
+
+  SOP-RE4  Learning Hours Issue - Shiksha Path
+           get_user_first_name      → greeting name only (no diagnostic tools — the SOP
+                                        itself requires no eligibility checks)
+
+  SOP-RE5  Learning Hours Issue - SPARROW / APAR    (reuses CA/APAR + profile_update tools)
+           get_user_profile         → STEP 1 org/verification check + greeting name
+           get_user_cbp_plan        → STEP 4.2 APAR/CAP assignment check
+           get_mdo_details          → STEP 4.2 MDO contact-share (not assigned)
+           get_yp_am_details        → STEP 4.2 YP/AM fallback (no MDO)
+           get_user_enrollments     → STEP 4.5 course completion check
+
   SOP-RE6  Leader Board Issue                       → tools TBD
 
 Tool functions are added here as each SOP is implemented.
@@ -39,7 +52,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 from langchain.tools import tool
 
-from app.core.tools.login_issue_tool import get_mdo_details
+from app.core.tools.ca_apar_tool import get_cap_hierarchy, get_user_cbp_plan, get_user_enrollments
+from app.core.tools.login_issue_tool import get_mdo_details, get_yp_am_details
+from app.core.tools.profile_update_tool import get_user_profile
 from app.core.utils.config import IGOT_API_HOST_URL, IGOT_KEY
 
 logger = logging.getLogger(__name__)
@@ -485,7 +500,6 @@ def get_user_ehrms_details(email: str) -> str:
         return json.dumps({
             "email": "{{USER_EMAIL}}",
             "found": True,
-            "firstName": user.get("firstName"),
             "ehrms_id": ehrms_id,
             "external_system_name": external_system_name,
             "_spoc_replacements": {"{{USER_EMAIL}}": email},
@@ -494,6 +508,109 @@ def get_user_ehrms_details(email: str) -> str:
         logger.error(f"[recognition_engagement_tools] get_user_ehrms_details error: {e}")
         return json.dumps({"found": False, "error": str(e),
                             "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+
+# ── Learning Hours (SOP-RE3/RE4/RE5) — greeting name only ──────────────────
+# No diagnostic value — every Learning Hours flow calls this once, purely to
+# fetch the user's first name for the email greeting.
+
+@tool
+def get_user_first_name(email: str) -> str:
+    """Fetch just the user's first name, for the email greeting.
+
+    Used by every Learning Hours subcategory (SOP-RE3 eHRMS, SOP-RE4 Shiksha
+    Path, SOP-RE5 SPARROW/APAR) as a first step — purely cosmetic, not part
+    of any SOP's resolution logic.
+    """
+    try:
+        url = f"{IGOT_API_HOST_URL}/api/private/user/v1/search"
+        headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": "application/json"}
+        payload = {"request": {"filters": {"email": email}}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        content = resp.json().get("result", {}).get("response", {}).get("content", [])
+        first_name = content[0].get("firstName") if content else None
+        return json.dumps({
+            "email": "{{USER_EMAIL}}",
+            "firstName": first_name,
+            "_spoc_replacements": {"{{USER_EMAIL}}": email},
+        })
+    except Exception as e:
+        logger.error(f"[recognition_engagement_tools] get_user_first_name error: {e}")
+        return json.dumps({"firstName": None, "error": str(e),
+                            "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+
+# ── SOP-RE5 STEP 6 — All India Service cadre details ────────────────────────
+
+@tool
+def get_user_cadre_details(email: str) -> str:
+    """Fetch All India Service (IAS/IPS/IFS) cadre details via the User Search API.
+
+    Used in SOP-RE5 STEP 6 to check, in the background, whether the user's
+    service-related profile fields are populated — never ask the user whether
+    they belong to an All India Service.
+
+    Field mapping (confirmed via live UAT inspection):
+      Cadre Details           -> profileDetails.cadreDetails
+      Cadre Name              -> profileDetails.cadreDetails.cadreName
+      Service Details         -> profileDetails.cadreDetails.civilServiceName
+      Batch Information       -> profileDetails.cadreDetails.cadreBatch
+      Central Deputation      -> profileDetails.cadreDetails.isOnCentralDeputation
+    """
+    try:
+        url = f"{IGOT_API_HOST_URL}/api/private/user/v1/search"
+        headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": "application/json"}
+        payload = {"request": {"filters": {"email": email}}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        content = resp.json().get("result", {}).get("response", {}).get("content", [])
+
+        if not content:
+            return json.dumps({"found": False, "message": "User profile not found.",
+                                "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+        profile_details = content[0].get("profileDetails") or {}
+        cadre_details = profile_details.get("cadreDetails") or {}
+
+        return json.dumps({
+            "email": "{{USER_EMAIL}}",
+            "found": True,
+            "cadre_name": cadre_details.get("cadreName"),
+            "service_details": cadre_details.get("civilServiceName"),
+            "batch_details": cadre_details.get("cadreBatch"),
+            "central_deputation": cadre_details.get("isOnCentralDeputation"),
+            "_spoc_replacements": {"{{USER_EMAIL}}": email},
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"[recognition_engagement_tools] get_user_cadre_details error: {e}")
+        return json.dumps({"found": False, "error": str(e),
+                            "_spoc_replacements": {"{{USER_EMAIL}}": email}})
+
+
+# ── SOP-RE5 — reference video (static, no API call) ────────────────────────
+# Same convention as CA/APAR's MDO/CAP contact links: the link is built once
+# here, not typed into the prompt, so it only needs updating in one place.
+
+SPARROW_TRAINING_DATA_VIDEO_URL = "https://youtu.be/gSMSuFib2n8"
+
+
+@tool
+def get_sparrow_training_data_video() -> str:
+    """Return the reference video for how iGOT training data reflects in SPARROW.
+
+    Used in SOP-RE5 STEP 4.5's "completed" branch — a static resource, not an
+    API call. Returns pre-built HTML so the link is copied exactly as given,
+    never retyped or reformatted by the LLM.
+    """
+    link_html = (
+        f'<a href="{SPARROW_TRAINING_DATA_VIDEO_URL}" target="_blank" '
+        f'rel="noopener noreferrer">{SPARROW_TRAINING_DATA_VIDEO_URL}</a>'
+    )
+    return json.dumps({
+        "title": "How to Fetch iGOT Training Data into SPARROW APAR_V8.mp4",
+        "link_html": link_html,
+    })
 
 
 # ── SOP-RE2 STEP 1/2 — weekly clap 12-week insights + reset diagnosis ──────
@@ -641,6 +758,14 @@ def get_recognition_engagement_tools() -> list:
         get_karma_course_status,   # SOP-RE1 Flow A STEP 1/2/3 + Edge Case 1
         get_karma_event_status,    # SOP-RE1 Flow B STEP 1 credited check
         get_user_ehrms_details,    # SOP-RE3 STEP 1.1 eHRMS mapping check
-        get_mdo_details,           # SOP-RE3 STEP 1.3/1.4 MDO contact-share
+        get_mdo_details,           # SOP-RE3 STEP 1.3/1.4, SOP-RE5 STEP 4.2 MDO contact-share
+        get_yp_am_details,         # SOP-RE5 STEP 4.2 YP/AM fallback
+        get_user_first_name,       # SOP-RE3/RE4 — greeting name only
+        get_user_profile,          # SOP-RE5 STEP 1 — org/verification check + greeting name
+        get_user_cbp_plan,         # SOP-RE5 STEP 4.2 — APAR/CAP assignment check
+        get_cap_hierarchy,         # SOP-RE5 STEP 4.5 — CAP structure + Final Assessment child
+        get_user_enrollments,      # SOP-RE5 STEP 4.5 — course/assessment completion check
+        get_sparrow_training_data_video,  # SOP-RE5 STEP 4.5 — reference video (completed branch)
+        get_user_cadre_details,    # SOP-RE5 STEP 6 — All India Service cadre check
         get_weekly_clap_status,    # SOP-RE2 STEP 1/2 — 12-week reset diagnosis
     ]

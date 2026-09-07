@@ -20,7 +20,15 @@
 | `get_karma_course_status` | `(email, course_id)` | Fetch a course's karma credit status (`completion_credited`, `rating_credited`, `completion_points`, `rating_points`, `acbp`, `has_assessment`, `monthly_rank`) from `/api/karmapoints/read` (SOP-RE1 Flow A STEP 1-3, Edge Case 1) |
 | `get_karma_event_status` | `(email, event_id)` | Fetch whether karma points were credited for a specific event (SOP-RE1 Flow B STEP 1) |
 | `get_user_ehrms_details` | `(email)` | Fetch `ehrms_id` / `external_system_name` from `profileDetails.additionalProperties` via the User Search API (SOP-RE3 STEP 1) |
-| `get_mdo_details` | `(email)` | Fetch the user's MDO Admin contact (Organization, Name, Email) when eHRMS mapping data is missing (SOP-RE3 STEP 1) |
+| `get_mdo_details` | `(email)` | Fetch the user's MDO Admin contact (Organization, Name, Email) when eHRMS mapping data is missing (SOP-RE3 STEP 1, SOP-RE5 STEP 4.2) |
+| `get_user_first_name` | `(email)` | Fetch just the user's first name for the email greeting — no diagnostic value (SOP-RE3/RE4) |
+| `get_user_profile` | `(email)` | Fetch org (`rootOrgName`/`channel`), verification status, designation, and group — reused from Profile Update tools (SOP-RE5 STEP 1) |
+| `get_user_cbp_plan` | `(email)` | Fetch the user's CBP/training plan, returning `apar_count`/`apar_plans` — reused from CA/APAR tools (SOP-RE5 STEP 4.2) |
+| `get_yp_am_details` | `(ministry_or_state)` | Fetch YP/AM contact when no MDO is found — reused from CA/APAR tools (SOP-RE5 STEP 4.2) |
+| `get_cap_hierarchy` | `(cap_id)` | Fetch a CAP's child courses, classifying each as Assessment/SCORM/Non-SCORM — reused from CA/APAR SOP-3 tools (SOP-RE5 STEP 4.5) |
+| `get_user_enrollments` | `(email, content_id)` | Fetch a course's completion/certificate status — reused from CA/APAR tools (SOP-RE5 STEP 4.5) |
+| `get_sparrow_training_data_video` | `()` | Static resource, no API call — returns the "How to Fetch iGOT Training Data into SPARROW" reference video's title and pre-built clickable HTML link (SOP-RE5 STEP 4.5, completed branch) |
+| `get_user_cadre_details` | `(email)` | Fetch All India Service (IAS/IPS/IFS) cadre details from `profileDetails.cadreDetails` via the User Search API (SOP-RE5 STEP 6) |
 | `get_weekly_clap_status` | `(email)` | Fetch 12 weeks of platform time-spent and diagnose a weekly-clap reset — precomputes the w1→w12 threshold scan (SOP-RE2 STEP 1/2) |
 
 ---
@@ -199,7 +207,7 @@ learning records are not reflecting in eHRMS.
 |---|---|---|
 | present | present | Resolved. Close. Not an iGOT-side issue — direct the user to eHRMS's own support team; they should be ready to share their Name, Email, and eHRMS ID with that team (information for them to bring, not something to ask the user for here). |
 | missing | — | `get_mdo_details(email)`. MDO found → Resolved. Close — eHRMS ID can only be updated by the org's MDO, not the user; share the MDO contact; note up to 24h for the sync to reflect. MDO not found → **escalate=true** — no MDO Admin found for the org. |
-| present | missing | `get_mdo_details(email)`. MDO found → **escalate=true** — External System Name not updated, MDO contact shared, pending update; still give the user the full guidance (mandatory field, MDO/Admin-only, share contact, 24h note). MDO not found → **escalate=true** — no MDO Admin found for the org. |
+| present | missing | `get_mdo_details(email)`. MDO found → Resolved. Close — External System Name not updated; mandatory field, MDO/Admin-only; share MDO contact; note up to 24h for the sync to reflect. MDO not found → **escalate=true** — no MDO Admin found for the org. |
 
 `get_mdo_details` returns the contact as masked placeholder tokens (`{{MDO_ADMIN_NAME}}`,
 `{{MDO_ADMIN_EMAIL}}`) — copy them exactly as returned, never invent a name/email.
@@ -211,7 +219,7 @@ learning records are not reflecting in eHRMS.
 | Both eHRMS ID and External System Name present | ❌ |
 | eHRMS ID missing, MDO found | ❌ |
 | eHRMS ID missing, MDO not found | ✅ |
-| External System Name missing (eHRMS ID present), MDO found | ✅ |
+| External System Name missing (eHRMS ID present), MDO found | ❌ |
 | External System Name missing (eHRMS ID present), MDO not found | ✅ |
 
 ---
@@ -219,14 +227,76 @@ learning records are not reflecting in eHRMS.
 
 # SOP-RE4: Learning Hours Issue - Shiksha Path
 
-**Status:** Not yet defined — placeholder.
+No tool calls, no eligibility checks — Shiksha Path is not managed or operated by
+Karmayogi Bharat or DoPT.
+
+**STEP 1.** Resolved. Close. Tell the user Shiksha Path is managed by the Directorate of
+Training, CBDT; Karmayogi Bharat and DoPT do not manage or operate the Shiksha Path portal;
+ask them to coordinate directly with the Directorate of Training / CBDT team for any
+Shiksha Path-related issues; share the support email `aed4.training@incometax.gov.in`.
 
 ---
 ---
 
 # SOP-RE5: Learning Hours Issue - SPARROW / APAR
 
-**Status:** Not yet defined — placeholder.
+Covers reports that APAR training/completion data is not reflecting in SPARROW/APAR. Reuses
+CA/APAR and Profile Update tools rather than adding new ones — the underlying data (profile,
+CBP/training plan, enrollments, MDO/YP contacts) is the same.
+
+**STEP 1.** `get_user_profile(email)` — also the greeting-name source. Read
+`rootOrgName`/`channel` (organization) and `profileDetails.profileStatus` (verification).
+
+**STEP 2 — Organization mapping.** Mapped to "iGOT" or "Karmayogi Prarambh Trainee"
+(placeholder org) → Resolved. Close — APAR courses/training plans are only assigned once
+mapped to the correct department; ask the user to raise a Transfer Request. Otherwise → STEP 3.
+
+**STEP 3 — Verification status** (same STEP 1 result). Not verified → STEP 6. Verified → STEP 4.
+
+**STEP 4 — Verified Profile Flow.**
+- 4.1: Organization/Designation/Group are for internal routing only (STEP 2's org-mapping
+  check) — do not restate them to the user or ask for confirmation; keep the response
+  focused only on the course/assessment/CAP status. Proceed directly to 4.2.
+- 4.2: `get_user_cbp_plan(email)`. Read `apar_count`/`apar_plans`.
+
+| apar_count | Action |
+|---|---|
+| 0 | `get_mdo_details(email)`. MDO found → Resolved. Close — share MDO contact; no APAR/CAP currently assigned; only APAR-assigned + completed courses reflect in SPARROW/APAR. MDO not found → `get_yp_am_details(ministry_or_state)`. YP/AM found → Resolved. Close — same message, share YP/AM contact. Neither found → **escalate=true**. |
+| > 0, course named in ticket, no match in `apar_plans` | Resolved. Close — tell the user the named course is not among their currently assigned APAR courses. Add, formally: please ensure all courses/assessments assigned under their APAR/CAP plans are completed; it may take up to 24 hours for completion data to reflect in SPARROW. |
+| > 0, course named in ticket, matched to one `apar_plans` entry | `get_cap_hierarchy(cap_id=content_id)` — same tool as CA/APAR SOP-3, used only to locate the Assessment child (`assessment_child_id`); prerequisite SCORM/Non-SCORM children are out of scope here. No Assessment child (flat course) → `get_user_enrollments(email, content_id)` on the course directly. Assessment child found → `get_user_enrollments(email, content_id=assessment_child_id)` — check the CAP assessment's own completion, not the top-level course. Not completed → Resolved. Close — complete/reattempt and pass the course/assessment. Completed → `get_sparrow_training_data_video()` — static resource, returns the reference video's title + pre-built clickable link (`link_html`). Resolved. Close — share it. No completion-timestamp field is available from any tool, so there's no 24h distinction — completed is completed, regardless of when. |
+| > 0, no course named in ticket | Resolved. Close — generic message: APAR course(s) assigned, all courses + assessments must be completed to reflect in SPARROW, and it may take up to 24 hours for completion data to reflect. As its own separate paragraph, keep it short: ask the user to share the course name and link they're facing an issue with, so it can be investigated further — no "one particular course" or "even after completing it" qualifiers. |
+
+**STEP 5 — Incorrect Profile Details.** Triggered when the ticket message itself describes a
+wrong field (not a missing-mapping case). Check the ticket text for which field: Organization
+wrong → same Transfer Request guidance as STEP 2. Designation wrong → Resolved. Close — raise a
+Designation Update request. Group/other → Resolved. Close — use Profile Update. Always tell the
+user to recheck APAR courses/training plans after the update. Field not identifiable from the
+ticket → `needs_clarification=true`.
+
+**STEP 6 — Profile Not Verified.** `get_user_cadre_details(email)` checks All India Service
+(IAS/IPS/IFS) eligibility entirely in the background — never ask the user. Some of
+`cadre_name`/`service_details`/`batch_details`/`central_deputation` populated but not all →
+Resolved. Close — tell the user some mandatory service-related details are missing/incomplete
+(Cadre Details, Service Details, Batch Information, Central Deputation Details); ask them to
+update; APAR plans may reflect within 2-3 hours after update. All four empty, or all four
+populated → Resolved. Close — complete profile verification; APAR courses/training plans may
+reflect once verified.
+
+## SOP-RE5 Outcome Rules — Quick Reference
+
+| Scenario | Escalate? |
+|----------|:-------------:|
+| Mapped to iGOT/Karmayogi Prarambh Trainee (placeholder org) | ❌ |
+| Not verified, cadre fields partially complete | ❌ |
+| Not verified, cadre fields all empty or all complete | ❌ |
+| APAR/CAP not assigned, MDO or YP/AM found | ❌ |
+| APAR/CAP not assigned, neither MDO nor YP/AM found | ✅ |
+| Named course not among assigned APAR courses | ❌ |
+| Named course matched, not completed | ❌ |
+| Named course matched, completed (video shared) | ❌ |
+| No course named, APAR assigned (generic guidance) | ❌ |
+| Incorrect profile detail, field identified from ticket | ❌ |
+| Incorrect profile detail, field not identified | (needs_clarification) |
 
 ---
 ---
