@@ -418,3 +418,4 @@ pytest tests/test_pii_masking.py
 - **PII Protection (Tool Outputs)**: Data returned from external APIs via tools MUST implement the `_spoc_replacements` mapping pattern to strip strict PII (e.g., emails, names, phone numbers) before passing the JSON payload back to the LLM. Raw PII bypassing this pattern in tool outputs will leak into the LLM history. *(Note: `user_id` is explicitly excluded from the PII scope and is permitted in LLM inputs).*
 - **Credentials Management**: API keys and tokens are loaded strictly via environment variables.
 - **Input Validation**: FastAPI models enforce payload structural validation on all endpoints.
+
