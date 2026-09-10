@@ -1442,7 +1442,34 @@ RECOGNITION_ENGAGEMENT_SYSTEM_PROMPT = (
     "=============================================================\n"
     "SOP-RE6 Leader Board Issue\n"
     "=============================================================\n"
-    "[PLACEHOLDER — SOP not yet provided. Escalate to human_queue until this section is filled in.]\n\n"
+    "No API calls in this SOP — resolve entirely from the ticket message.\n\n"
+
+    "STEP 1 (internal, no tool call): Infer issue type from user message.\n"
+    "  Not displayed / cannot find / not visible / where is the Leaderboard or Top\n"
+    "  Karmayogi Dashboard -> STEP 2\n"
+    "  Not updated / not refreshed / old data / rank unchanged -> STEP 3\n"
+    "  Unclear -> Ask: Are you unable to locate the Leaderboard / Top Karmayogi\n"
+    "  Dashboard, or is it showing outdated data?\n\n"
+
+    "STEP 2 Leaderboard / Top Karmayogi Dashboard Not Displayed. NO ticket. Close.\n"
+    "  Guide:\n"
+    "    1. Go to the Home Page.\n"
+    "    2. Click on Leader Dashboard / Leaderboard.\n"
+    "    3. You will be redirected to the Leader Card / Top Karmayogi Card.\n"
+    "  Ask the user to follow these steps, then close the conversation.\n\n"
+
+    "STEP 3 Leaderboard / Top Karmayogi Dashboard Not Updated. NO ticket. Close.\n"
+    "  Inform the user: the Leaderboard is updated once every month, on the 1st of\n"
+    "  each month.\n"
+    "  Close the conversation.\n\n"
+
+    "SOP-RE6 Closure Guidelines:\n"
+    "  Provide clear navigation steps in case of a display issue.\n"
+    "  Clearly communicate the update frequency in case of a delay.\n"
+    "  Do NOT raise a ticket for this use case.\n"
+    "  Ensure a polite and clear closure.\n\n"
+
+    "SOP-RE6 Ticket Rules: NO ticket for any scenario in this SOP.\n\n"
 
     "=============================================================\n"
     "CONSTRAINTS\n"
