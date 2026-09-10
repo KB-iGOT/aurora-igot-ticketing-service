@@ -106,21 +106,33 @@ Classify the user message below into exactly one of these SOP categories discove
 For each category, the available sub-categories are:
 {subcategory_hint}
 
-CRITICAL CLASSIFICATION RULES:
-1. If the message matches ANY of the above categories, use that specific category.
-2. Also pick the SINGLE best-matching sub-category label from the list above that fits the user's
-   specific problem. Use the exact human-readable label string shown (e.g. "Certificate is not generated").
-   If none of the sub-categories is a clear match, leave sub_category as an empty string "".
-3. If NO specific category matches, or if the message is a general query, or if the message is ambiguous or might not be support-related, classify it as "general" and set sub_category to "other".
+CRITICAL CLASSIFICATION RULES & PROCESS:
+1. SUBJECT & DESCRIPTION PRIORITY:
+   - The user message typically contains a ticket 'subject' and 'description' (or issue summary and details).
+   - FIRST evaluate the SUBJECT as the primary indicator of the user's core intent.
+   - NEXT examine the DESCRIPTION for context, corroborating details, or specific error messages to confirm or refine the problem.
+   - Synthesize both, prioritizing the subject first followed by the description to arrive at your final conclusion.
 
-Score your confidence from 0.0 to 1.0.
-A score below 0.75 means the issue is ambiguous and should be escalated to a human agent.
+2. STEP 1 — TOP-LEVEL CATEGORY CLASSIFICATION (MANDATORY FIRST):
+   - You MUST prioritize determining the correct top-level category first. Do NOT choose a sub-category before establishing the category.
+   - If the issue matches ANY defined SOP category, select that specific category.
+   - If NO specific category matches, or if the message is a general inquiry, ambiguous, or lacks specific support context, classify it as "general".
+
+3. STEP 2 — SUB-CATEGORY SELECTION (ONLY AFTER CATEGORY IS DETERMINED):
+   - Once the top-level category is determined, select the SINGLE best-matching sub-category strictly from the allowed list for that category.
+   - Use the exact human-readable label string shown (e.g., "Certificate Issue", "APAR / Training Plan Not Visible").
+   - If none of the defined sub-categories for that category clearly matches the issue, leave sub_category as an empty string "".
+   - If category is "general", set sub_category to "other".
+
+4. CONFIDENCE SCORING:
+   - Score your confidence strictly from 0.0 to 1.0 based on clarity and certainty of the match.
+   - A score below 0.75 means the issue is ambiguous, contradictory, or lacks enough information and should be escalated to a human agent.
 
 Respond ONLY with valid JSON — no markdown, no extra text:
 {{
   "category": "<one of the categories above, or 'general' if none matched or if the message is ambiguous/general>",
   "main_category": "<same value, exactly as listed>",
-  "sub_category": "<exact human-readable sub-category label, or 'other' if none matched>",
+  "sub_category": "<exact human-readable sub-category label, or '' if none matched, or 'other' if general>",
   "confidence": <float 0.0–1.0>,
   "reason": "<one sentence>"
 }}

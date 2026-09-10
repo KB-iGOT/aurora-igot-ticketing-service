@@ -243,3 +243,112 @@ async def get_cleaned_ticket_details(ticket_id: str) -> dict:
         filtered_data["description"] = extract_email_body(filtered_data["description"])
         
     return filtered_data
+
+
+async def ensure_aurora_tag(ticket_id: str) -> dict:
+    """
+    Ensures the 'aurora' tag is associated with a Zoho Desk ticket.
+
+    The function first retrieves the ticket's existing tags. If the
+    'aurora' tag is already present, no update is performed. Otherwise,
+    the 'aurora' tag is associated with the ticket.
+
+    Args:
+        ticket_id : Zoho internal ticket ID (long numeric string)
+
+    Returns:
+        Zoho API response dict from the associate-tag API when the tag
+        is added, or a dict indicating that no update was required.
+    """
+    access_token = await get_valid_access_token()
+
+    headers = {
+        "orgId":         ZOHO_ORG_ID,
+        "Authorization": f"Zoho-oauthtoken {access_token}",
+        "Content-Type":  "application/json",
+    }
+
+    # Get existing tags
+    get_tags_url = f"{ZOHO_DESK_URL}/api/v1/tickets/{ticket_id}/tags"
+
+    logger.info(
+        f"[zoho] Checking tags for ticket {ticket_id}"
+    )
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            get_tags_url,
+            headers=headers,
+        )
+
+    if response.status_code >= 400:
+        logger.error(
+            f"[zoho] Failed to get tags for ticket {ticket_id}: "
+            f"{response.status_code} {response.text}"
+        )
+        raise ZohoAPIError(
+            f"get tags {response.status_code}: {response.text}"
+        )
+
+    result = response.json()
+
+    tags = result.get("tags", [])
+
+    # Check whether 'aurora' already exists
+    aurora_present = any(
+        tag.get("name") == "aurora"
+        for tag in tags
+    )
+
+    if aurora_present:
+        logger.info(
+            f"[zoho] Tag 'aurora' already exists on ticket {ticket_id}. "
+            "Skipping tag update."
+        )
+        return {
+            "ticket_id": ticket_id,
+            "tag": "aurora",
+            "updated": False,
+            "reason": "tag_already_present",
+        }
+
+    # 'aurora' is not present, so associate it
+    associate_tag_url = (
+        f"{ZOHO_DESK_URL}/api/v1/tickets/{ticket_id}/associateTag"
+    )
+
+    body = {
+        "tags": [
+            "aurora"
+        ]
+    }
+
+    logger.info(
+        f"[zoho] Tag 'aurora' not found on ticket {ticket_id}. "
+        "Associating tag."
+    )
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            associate_tag_url,
+            headers=headers,
+            json=body,
+        )
+
+    if response.status_code >= 400:
+        logger.error(
+            f"[zoho] Failed to associate tag 'aurora' "
+            f"with ticket {ticket_id}: "
+            f"{response.status_code} {response.text}"
+        )
+        raise ZohoAPIError(
+            f"associate tag {response.status_code}: {response.text}"
+        )
+
+    result = response.json()
+
+    logger.info(
+        f"[zoho] Tag 'aurora' associated with ticket {ticket_id}"
+    )
+
+    return result

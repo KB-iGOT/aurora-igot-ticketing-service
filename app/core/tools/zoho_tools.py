@@ -44,6 +44,7 @@ def update_zoho_ticket_direct(
         ZohoAPIError,
         create_draft_reply,
         get_ticket_details,
+        ensure_aurora_tag,
     )
 
     logger.info(
@@ -63,11 +64,26 @@ def update_zoho_ticket_direct(
             )
             to_address = ""
 
-        return await create_draft_reply(
+        # Also ensure 'aurora' tag is present
+        try:
+            tag_result = await ensure_aurora_tag(ticket_id)
+            # You can log this separately if you want more granular visibility
+            logger.info(
+                f"[zoho_tools] Tag association result for ticket {ticket_id}: "
+                f"{tag_result}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[zoho_tools] Failed to ensure 'aurora' tag for ticket {ticket_id}: {e}"
+            )
+
+        result = await create_draft_reply(
             ticket_id=ticket_id,
             content=resolution_summary,
             to=to_address,
         )
+
+        return result
 
     try:
         # Graph nodes are sync; run the async draft call in a new event loop
