@@ -23,6 +23,9 @@ Verification, Designation/Group, and Profile Update Use Cases
 | `get_yp_am_details` | `(ministry_or_state)` | YP/SPOC fallback when no MDO Admin exists — reused from login_issue_tool.py (SOP-A1 STEP 3, Edge Case 2, SOP-A2 fallback) |
 | `search_organization` | `(org_name)` | Search for an organization by EXACT name (case-insensitive, no partial matching) via the Org Search API (SOP-A1 Edge Case 2) |
 | `search_organization_under_ministry_or_state` | `(ministry_or_state_name, org_name)` | Second-attempt search when the exact name fails: matches the Ministry/State by name, then searches (partial match) for the org under it via the Org Hierarchy Search API (SOP-A1 Edge Case 2) |
+| `search_designation` | `(designation_name)` | Fetch the full active-designation master list — matching against the user's wording is done by the LLM, conservatively (word-boundary, never loose substring) (SOP-P3 STEP 1) |
+| `get_user_root_org_id` | `(email)` | Resolve the user's own `rootOrgId` via email → user_id → User Read API (SOP-P3 STEP 2) |
+| `get_org_imported_designations` | `(root_org_id)` | Fetch which designations a specific org's MDO has actually imported, via the Org Framework Read API — response shape unverified against a live call, parsing may need adjustment (SOP-P3 STEP 2) |
 | `get_user_profile` | `(email)` | Ticket owner's OWN organization/ministry details — reused from profile_update_tool.py (SOP-A2 STEP 2A/3.1.1, YP fallback input) |
 | `get_mdo_details` | `(email)` | MDO Admin for the ticket owner's OWN organization — reused from login_issue_tool.py (SOP-A2 STEP 2A/3.1.1) |
 | `validate_new_contact_domain` | `(new_email)` | Domain-whitelist check for the NEW email the user wants to update to — NOT the ticket owner's own email (SOP-A2 STEP 2) |
@@ -120,6 +123,78 @@ the user wrote it.
 ---
 ---
 
+# SOP-P1: Profile Update — Name Update
+
+Use Case: user requests to update their NAME on their profile.
+
+No tool call needed — pure self-service guidance. Resolved. Close. No ticket. Guide the
+user through the steps, as an HTML ordered list, followed by a closing sentence:
+1. Click on View Profile.
+2. Navigate to the Name section.
+3. Click on Edit Profile.
+4. Update the Name as required.
+5. Click on Save / Submit to update the details.
+
+Closing: "Please feel free to reach out if you face any difficulty with the above
+steps."
+
+# SOP-P2: Profile Update — Display Name Update
+
+Use Case: user requests to update their Display Name / Profile Name / User Name —
+distinct from SOP-P1's NAME field (this is the system-generated name shown next to the
+profile, not the editable profile name).
+
+No tool call needed. Resolved. Close. No ticket. Inform the user politely: the display
+name (profile name / user name) is generated automatically by the platform and cannot be
+manually modified by users at this time; close with an appreciative, courteous note
+inviting further questions.
+
+# SOP-P3: Profile Update — Designation Not Found
+
+Use Case: user reports being unable to find their designation while updating their
+profile.
+
+**STEP 1.** `search_designation(designation_name)` — returns the full active-designation
+master list (id + name), not a pre-filtered match. The LLM matches the user's wording
+against it conservatively:
+- Exact match (case-insensitive, trivial spelling/spacing variant) → single confident
+  match, proceed to STEP 2.
+- No plausible match at all → **escalate=true** (not found in master data at all).
+- Multiple plausible matches, not clearly obvious which one (e.g. an abbreviation that
+  could expand to more than one real designation — "sec officer" must never be silently
+  treated as matching "Secretary Officer" via substring overlap) → **needs_clarification=true**,
+  ask the user to confirm the exact/full designation name. Never guess — acting on the
+  wrong designation is a real mistake, not a minor inconvenience.
+
+**STEP 2.** Only reached once exactly one designation is confirmed.
+`get_user_root_org_id(email)` → the user's own `rootOrgId`.
+`get_org_imported_designations(root_org_id)` → designations this org's MDO has actually
+imported (existing in master data is not enough — each org must separately import it).
+
+| Outcome | Action |
+|---|---|
+| Confirmed designation IS imported by the user's own org | Resolved. Close — give the 4-step self-service guide (View Profile → Primary Details → Edit/Pen icon → update Designation). |
+| Confirmed designation exists in master data but NOT imported by the user's own org | Resolved. Close — `get_mdo_details_by_org_id(org_id=<user's own root_org_id>)`, tell the user it hasn't been imported yet, share MDO Name/Email, ask them to request the import. If no MDO found for their own org → **escalate=true**. |
+
+# SOP-P4: Email ID / Mobile Number Updation — OTP Not Received
+
+Use Case: user reports not receiving the OTP while trying to update their Email ID or
+Mobile Number on their profile.
+
+`get_user_root_org_id(email)` → the user's own `rootOrgId`.
+`get_mdo_details_by_org_id(root_org_id)` → the user's own MDO Admin.
+
+- MDO found → Resolved. Close — one single, formal response covering both: (1) OTP
+  verification is mandatory for this update and cannot be bypassed, and (2) since OTP
+  isn't being received, connect directly with the MDO Admin (share Name/Email only, no
+  Mobile), providing both the existing and the new Email ID/Mobile Number so the MDO can
+  make the change on their behalf.
+- MDO not found → **escalate=true**, standard phrasing.
+
+Every other Profile Update request (not Name, Display Name, Designation, or Email/Mobile
+OTP), and every other not-yet-implemented subcategory (Email/Mobile already registered,
+Profile Verification/Verified Badge, Designation/Group Not verified), still escalates
+immediately as out of scope.
 # SOP-A2: Email / Mobile Already Registered
 
 Covers users trying to update the Email ID or Mobile Number on their profile — asking how,

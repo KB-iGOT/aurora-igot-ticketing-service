@@ -28,6 +28,7 @@ import logging
 import requests
 from langchain.tools import tool
 
+from app.core.tools.course_tools import get_access_settings
 from app.core.tools.login_issue_tool import get_mdo_details, get_yp_am_details
 from app.core.tools.profile_update_tool import get_user_profile
 from app.core.utils.config import IGOT_API_HOST_URL, IGOT_KEY
@@ -448,6 +449,86 @@ def get_assessment_attempt_count(email: str, assessment_identifier: str) -> str:
     except Exception as e:
         return json.dumps({"found": False, "error": f"Error fetching assessment attempt count: {e!s}"})
 
+
+# ── SOP-2 CAP Eligibility check ─────────────────────────────────────────────
+# Used together with get_access_settings (reused from course_tools.py) when a
+# user reports being unable to ENROLL in a specific CAP they've named — that
+# tool's eligibility criteria give organisations as raw rootOrgId values, not
+# names, so this resolves them to real org names for the response.
+
+@tool
+def resolve_org_names(org_ids: list[str]) -> str:
+    """Resolve a list of organisation ids (rootOrgId) to their real org names.
+
+    Used in SOP-2 (Unable to Enroll / eligibility check) to turn the raw
+    rootOrgId values returned by get_access_settings' userGroupCriteriaList
+    into human-readable organisation names for the response. Designation
+    criteria need no resolution — those are already plain names.
+    """
+    url = f"{IGOT_API_HOST_URL}/api/org/v1/search"
+    headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": "application/json"}
+    try:
+        payload = {"request": {"filters": {"id": org_ids}, "limit": len(org_ids) or 1}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        content = resp.json().get("result", {}).get("response", {}).get("content", [])
+        return json.dumps({
+            "org_ids": org_ids,
+            "resolved": [{"id": o.get("id"), "orgName": o.get("orgName")} for o in content],
+        })
+    except Exception as e:
+        logger.error(f"[ca_apar_tool] resolve_org_names error: {e}")
+        return json.dumps({"org_ids": org_ids, "resolved": [], "error": str(e)})
+
+
+# ── SOP-1 STEP 3 — State Government O.M. exemption check ───────────────────
+# The DoPT O.M. mandating APAR Training Plan creation does not apply to State
+# Government officials. Confirmed via live lookup: an org's own record (same
+# /api/org/v1/search-by-id call as resolve_org_names) reliably reports
+# sbOrgType as "ministry" or "state" — unlike ministryOrStateType, which is
+# inconsistent junk ("SPV" on both real ministries and real states).
+
+@tool
+def get_org_type(root_org_id: str) -> str:
+    """Determine whether an organisation is a State Government entity or a
+    Central Ministry, via its own org record.
+
+    Used in SOP-1 STEP 3 (no CBP plan exists) to check whether the DoPT O.M.
+    mandating APAR Training Plan creation even applies to this user — it does
+    NOT apply to State Government officials, so "no plan" is expected/correct
+    for them, not something to route toward MDO/Transfer-Request guidance.
+
+    Returns org_type: "state", "ministry", or "unknown" (neither flag set).
+    """
+    url = f"{IGOT_API_HOST_URL}/api/org/v1/search"
+    headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": "application/json"}
+    try:
+        payload = {"request": {"filters": {"id": [root_org_id]}, "limit": 1}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        content = resp.json().get("result", {}).get("response", {}).get("content", [])
+        if not content:
+            return json.dumps({"root_org_id": root_org_id, "found": False, "org_type": "unknown"})
+
+        org = content[0]
+        if org.get("isState"):
+            org_type = "state"
+        elif org.get("isMinistry"):
+            org_type = "ministry"
+        else:
+            org_type = org.get("sbOrgType") or "unknown"
+
+        return json.dumps({
+            "root_org_id": root_org_id,
+            "found": True,
+            "orgName": org.get("orgName"),
+            "org_type": org_type,
+        })
+    except Exception as e:
+        logger.error(f"[ca_apar_tool] get_org_type error: {e}")
+        return json.dumps({"root_org_id": root_org_id, "found": False, "org_type": "unknown", "error": str(e)})
+
+
 def _flatten_cap(c: dict) -> dict:
     """Extract slim, LLM-friendly fields from a raw CAP assignment entry.
 
@@ -553,4 +634,7 @@ def get_ca_apar_tools() -> list:
         get_yp_am_details,
         get_cap_hierarchy,
         get_assessment_attempt_count,
+        get_access_settings,
+        resolve_org_names,
+        get_org_type,
     ]

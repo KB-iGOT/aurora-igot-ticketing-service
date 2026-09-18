@@ -14,15 +14,20 @@
 
 | Tool | Signature | Purpose |
 |------|-----------|---------|
-| `get_user_profile` | `(email)` | Fetch organization, profile verification status, designation, group, ministry/state |
-| `get_user_cbp_plan` | `(email)` | Fetch the user's CBP (training) plan — list of assigned courses with `isApar`, `endDate` |
+| `get_user_profile` | `(email)` | Fetch organization, profile verification status, designation, group, ministry/state, `rootOrgId` |
+| `get_user_cbp_plan` | `(email)` | Fetch the user's CBP (training) plan — `total_count`, `apar_count`, `non_apar_count`, `apar_plans`/`non_apar_plans` (each with `course_name`, `content_id`, `is_apar`, `end_date`) |
+| `get_org_type` | `(root_org_id)` | Determine whether an org is a State Government entity or a Central Ministry — returns `org_type`: `"state"`, `"ministry"`, or `"unknown"` |
 | `get_assigned_cap_courses` | `(email)` | Fetch the CAP(s) assigned to a user via the admin "assigned courses" API, filtered to `courseCategory: "Comprehensive Assessment Program"` — returns `plan_id` (CAP DO_ID), `course_name`, `end_date` per CAP |
-| `get_user_enrollments` | `(email, status_filter=None, content_id=None)` | Fetch enrollment/progress status for the user's assigned courses. Pass `content_id` to check one specific course across the full enrollment history (bypasses the top-20-most-recent cap used when no `content_id` is given) — returns `course_name`, `completed: true/false`, and `certificate_issued: true/false` for that course |
-| `get_cap_hierarchy` | `(cap_id)` | Fetch a CAP's child courses (`identifier`, `name`) via `GET /api/private/content/v3/hierarchy/{cap_id}` |
+| `get_user_enrollments` | `(email, status_filter=None, content_id=None)` | Fetch enrollment/progress status for the user's assigned courses. Pass `content_id` to check one specific course across the full enrollment history — returns `course_name`, `completed: true/false`, and `certificate_issued: true/false` for that course |
+| `get_cap_hierarchy` | `(cap_id)` | Fetch a CAP's child courses (`identifier`, `name`, `resource_type`) plus `assessment_child_id` via `GET /api/private/content/v3/hierarchy/{cap_id}` |
+| `get_access_settings` | `(content_id)` | Fetch eligibility restrictions configured for a piece of content — `accessControl.userGroups[].userGroupCriteriaList[]`, each with `criteriaKey` (`"rootOrgId"` or `"designation"`) and `criteriaValue`. Empty/no groups means no restriction. Reused from the Courses category's tools. |
+| `resolve_org_names` | `(org_ids)` | Resolve a list of `rootOrgId` values to real org names via the Org Search API — needed because `get_access_settings`' org criteria are raw ids, not names |
 | `get_mdo_details` | `(email)` | Fetch MDO Admin/Leader name and email for the user's organization |
 | `get_yp_am_details` | `(ministry_or_state)` | Fetch YP/AM (SPOC) name, email, and contact details |
 | `get_user_cap_assignment` | `(email)` | Fetch the user's assigned Comprehensive Assessment Program(s) (CAP) — returns `total_count` and `assignments` (each: `cap_id`, `cap_name`, `end_date`, `link`, `link_html`) |
-| `get_assessment_attempt_count` | `(email, assessment_identifier)` | Fetch attempts made/allowed for an assessment via `GET /api/admin/assesment/retake/count`; returns `attempts_made`, `attempts_allowed`, `remaining_attempts`, `limit_exceeded` |
+| `get_assessment_attempt_count` | `(email, assessment_identifier)` | Fetch attempts made/allowed for an assessment via `GET /api/admin/assesment/retake/count`; returns `attempts_made`, `attempts_allowed`, `remaining_attempts`, `limit_exceeded`. `assessment_identifier` MUST be the CAP's actual Final Assessment child id (from `get_cap_hierarchy`'s `assessment_child_id`), never the CAP's own container id — the API rejects the CAP's own id with a server error. |
+
+**No PII in shared contact details.** When sharing MDO/YP contact, share Name and Email only — never the Mobile number.
 
 ---
 ---
@@ -55,7 +60,7 @@ Do not proceed to any other step.
 
 ---
 
-## STEP 2 — CBP Plan Data Exists → Summarize and Guide
+## STEP 2 — CBP Plan Data Exists → Confirm Visibility and List APAR Courses
 
 **[TOOL CALL]**
 ```
@@ -64,15 +69,21 @@ get_user_enrollments(email = <user_email>)
 
 **Outcome:** Resolved — respond and close.
 
-**User Message:**
-> "Upon checking, we found that the training plan has been assigned to your profile.
+**User Message** (fill in `[APAR Course List]` as an HTML list of the real `course_name`
+values from `apar_plans` — actual names, not a placeholder or a count):
+> "Upon checking, we found that the APAR courses are visible in your profile. Kindly log in
+> and check under the APAR Courses Section, where all assigned APAR courses will be visible
+> with a green tag.
 >
-> To view the training plan courses, please follow the steps below:
-> 1. Navigate to the **Homepage** and locate the **My iGOT** section.
-> 2. Under **My iGOT**, click on the **APAR** tab — courses marked with a green APAR tag.
-> 3. Click **Upcoming** to view all upcoming courses (APAR and non-APAR).
-> 4. Click **All** to view all assigned courses.
-> 5. Click **Completed** to view courses you've already finished."
+> [APAR Course List]
+>
+> We request you to kindly try the following once:
+> 1. Log out and log back into the portal.
+> 2. Access the platform again using an updated version of Google Chrome.
+> 3. Check under the APAR Courses Section on the homepage.
+>
+> If the issue still persists, please share a screenshot of your APAR section, so that we can
+> assist you further."
 
 ---
 
@@ -80,8 +91,28 @@ get_user_enrollments(email = <user_email>)
 
 **[TOOL CALL]**
 ```
-get_user_profile(email = <user_email>)
+get_user_profile(email = <user_email>)   # also returns rootOrgId
 ```
+
+**State Government exemption check (before anything else):**
+```
+get_org_type(root_org_id = <rootOrgId from get_user_profile>)
+```
+The DoPT O.M. (dated 04.07.2025) mandating APAR Training Plan creation does **not** apply to
+State Government officials — no plan existing is expected/correct for them, not a problem to
+route through Transfer Request or MDO/YP contact.
+
+**`org_type: "state"`.** Resolved. Close.
+> "The O.M. dated 04.07.2025 of the Department of Personnel and Training (DoPT), mandating
+> the creation of APAR Training Plan on iGOT, is not applicable for State Government
+> officials for the current year.
+>
+> However, if there are any specific instructions, circulars, or directives issued by your
+> department/organisation/state government, regarding the creation of a Training Plan, we
+> request you to share the same with us. This will enable us to forward the information to
+> the concerned authority and take appropriate action accordingly."
+
+**`org_type: "ministry"` or `"unknown"`** → proceed with the routing below.
 
 **Route based on organization:**
 
@@ -139,7 +170,8 @@ Both tools return the contact's name/email as **masked placeholder tokens** (e.g
 values, the same way user emails are masked elsewhere. Copy the tokens exactly as
 returned, character for character, curly braces included. Never invent, guess, or
 paraphrase a name/email — the real value is substituted in automatically after the
-response is generated, but only if the token text matches exactly.
+response is generated, but only if the token text matches exactly. Share Name and Email
+only — never Mobile.
 
 **Outcome:** Resolved, if either contact is found. Escalate only if **neither** an MDO Admin **nor** a YP/SPOC can be found.
 
@@ -232,9 +264,9 @@ If MDO details are not available:
 get_yp_am_details(ministry_or_state = <user_profile.ministry_or_state>)
 ```
 
-Both tools return the contact's name/email as **masked placeholder tokens** (e.g.
-`{{MDO_ADMIN_NAME}}`, `{{MDO_ADMIN_EMAIL}}`, `{{YP_AM_NAME}}`, `{{YP_AM_EMAIL}}`) — copy them
-exactly as returned; never invent, guess, or paraphrase a name/email yourself.
+Both tools return the contact's name/email as **masked placeholder tokens** — copy them
+exactly as returned; never invent, guess, or paraphrase a name/email yourself. Share Name
+and Email only — never Mobile.
 
 **If either contact found.** Resolved. Close. Use EXACTLY this message:
 > "Upon checking, we found that no CBP/training plan is currently assigned to your profile.
@@ -282,7 +314,7 @@ shortly.
 
 ---
 
-**No specific course named in the message** → Follow the STEP 2 pattern (full plan summary).
+**No specific course named in the message** → Follow the STEP 2 pattern (full plan summary with APAR course list).
 
 **Never invent a clickable link/URL for the course** — none of the tools return one; only use the named navigation steps above.
 
@@ -310,15 +342,18 @@ If not available:
 ```
 get_yp_am_details(ministry_or_state = <user_profile.ministry_or_state>)
 ```
-Both tools return the contact's name/email as **masked placeholder tokens** (e.g.
-`{{MDO_ADMIN_NAME}}`, `{{MDO_ADMIN_EMAIL}}`, `{{YP_AM_NAME}}`, `{{YP_AM_EMAIL}}`) — copy them
-exactly as returned; never invent, guess, or paraphrase a name/email yourself.
+Masked-placeholder-token handling as above. Share Name and Email only — never Mobile.
 
-**User Message** (if either contact found — resolved, close):
-> "As the training plans/courses are managed and assigned by the concerned authority, we request you to kindly connect with the contact details below for further assistance:
+**User Message** (fill in `[Department]` with organization from `get_user_profile`; if
+either contact found — resolved, close):
+> "If you notice that incorrect or unrelated courses are reflecting in your APAR section
+> that are not relevant to your designation, we request you to reach out to the MDO Admin
+> of your department, as they are responsible for creating and modifying training plans.
 >
-> **Name:** [MDO Admin Name from `get_mdo_details` if it found one; otherwise the YP/AM Name from `get_yp_am_details`]
-> **Email ID:** [MDO Admin Email from `get_mdo_details` if it found one; otherwise the YP/AM Email from `get_yp_am_details`]"
+> Please find the MDO Admin details for your department below:
+> **Department:** [Department]
+> **MDO Leader Name:** [MDO Admin Name from `get_mdo_details` if it found one; otherwise the YP/AM Name from `get_yp_am_details`]
+> **Email Id:** [MDO Admin Email from `get_mdo_details` if it found one; otherwise the YP/AM Email from `get_yp_am_details`]"
 
 If neither contact is found, escalate natively (set `escalate=true`). Tell the user their
 issue has been logged and escalated to the support team, and a specialist will assist them
@@ -330,10 +365,11 @@ shortly.
 
 | Scenario | Escalate? |
 |----------|:-------------:|
-| CBP plan exists — summary shared | ❌ |
+| CBP plan exists — APAR course list shared | ❌ |
+| No plan, State Govt org — O.M. exemption explained | ❌ |
 | Mapped to iGOT/Karmayogi Prarambh Trainee — guided to raise Transfer Request | ❌ |
-| No plan, contact (MDO or YP) found | ❌ |
-| No plan, neither MDO nor YP found | ✅ |
+| No plan (Ministry org), contact (MDO or YP) found | ❌ |
+| No plan (Ministry org), neither MDO nor YP found | ✅ |
 | Profile not verified — guided to verify | ❌ |
 | Edge Case 1/2 — contact found | ❌ |
 | Edge Case 1/2 — neither MDO nor YP found | ✅ |
@@ -478,7 +514,7 @@ If not available:
 ```
 get_yp_am_details(ministry_or_state = <user_profile.ministry_or_state>)
 ```
-Same masked-placeholder-token handling as SOP-1.
+Same masked-placeholder-token handling as SOP-1. Share Name and Email only — never Mobile.
 
 **If either contact found.** Resolved. Close. Use EXACTLY this message:
 > "Upon checking, we found that no Comprehensive Assessment Program (CAP) is currently assigned to your profile.
@@ -510,13 +546,71 @@ get_user_cap_assignment(email = <user_email>)
 
 Same case-insensitive/partial `cap_name` matching as above.
 
-**Named CAP IS found in assignments.** Resolved. Close. Use EXACTLY this message:
-> "Upon checking, we found that the following Comprehensive Assessment Program (CAP) is assigned to your profile:
+**Named CAP IS found in assignments** — the response now branches on what the user's
+message actually reports:
+
+**If the message specifically reports an ENROLLMENT/eligibility error** for this CAP (e.g.
+"not eligible to enrol", "unable to enroll", an eligibility error message) — not just
+"I can't find/see it":
+
+**[TOOL CALL]**
+```
+get_access_settings(content_id = <the matched CAP's cap_id>)
+```
+Returns `accessControl.userGroups[].userGroupCriteriaList[]`, each with `criteriaKey`
+(`"rootOrgId"` or `"designation"`) and `criteriaValue`. Empty/no groups → no restriction,
+treat as eligible.
+
+For any `criteriaKey: "rootOrgId"` entries:
+```
+resolve_org_names(org_ids = <all rootOrgId values across all groups>)
+```
+to get real org names — never show a raw org id. `criteriaKey: "designation"` values are
+already plain names, no resolution needed.
+
+Compare against the user's own organization and designation (from `get_user_profile`,
+already called this turn).
+
+- **User's own org/designation IS covered** by the CAP's criteria (they should be
+  eligible) → the error is likely a technical glitch, not a real restriction. Fall through
+  to the default CAP-found message below (do NOT use the eligibility-mismatch message when
+  they're actually eligible).
+- **User's own org/designation is NOT covered** by any group's criteria → Resolved. Close.
+  Use EXACTLY this message (fill in real values; only include the organisations line if
+  `rootOrgId` criteria exist, only include the designations line if `designation` criteria
+  exist):
+> "We would like to inform you that the mentioned program "[NAME OF CAP]" is accessible
+> only to users with specific organisations and designations.
 >
-> CAP Name: [cap_name]
-> CAP Link: [link_html]
+> Your profile is currently mapped to [User's ORG NAME], and the designation [User's
+> DESIGNATION] which is not included in the list of eligible organizations and designations
+> configured for this CAP.
 >
-> Kindly use the above link to access your Comprehensive Assessment Program."
+> List of organisations eligible to access the program: [real org names]
+> List of designations eligible to access the program: [real designation names]
+>
+> Therefore, the message "User is not eligible to enrol in this course" is being displayed.
+>
+> For any changes in eligibility or access to this CAP, we request you to kindly connect
+> with Department's Nodal Officer/MDO Admin who created this CAP, as the access settings
+> are managed by the concerned department."
+
+**Otherwise** (not an enrollment/eligibility complaint — e.g. "I can't find/see it") →
+Resolved. Close. Use EXACTLY this message (fill in `[CAP NAME]` with the real name, no
+link — the user is guided to search for it):
+> "As per our check, the CAP assigned to your profile is "[CAP NAME]".
+>
+> If the same is not visible on your dashboard, we request you to kindly search for the
+> [CAP NAME] created by your organization in the search bar and enroll in it.
+>
+> To unlock the Comprehensive Assessment, you are required to enroll in the Comprehensive
+> Assessment Program (CAP) and complete all the courses mapped under the program.
+>
+> Once all the courses associated with the program are successfully completed, the
+> Comprehensive Assessment will be automatically unlocked for you.
+>
+> If you are still facing any issues, kindly share a screenshot so that we can assist you
+> further."
 
 **Named CAP is NOT found in assignments** (the CAP they're asking about is not actually
 theirs):
@@ -580,45 +674,25 @@ shortly.
 
 | Scenario | Escalate? |
 |----------|:-------------:|
-| Named CAP found — name/link shared | ❌ |
+| Named CAP found (Not Visible flow) — name/link shared | ❌ |
+| Named CAP found, enrollment error, user actually eligible — link shared | ❌ |
+| Named CAP found, enrollment error, genuinely not eligible — criteria + MDO shared | ❌ |
+| Named CAP found (Unable to Enroll flow, non-enrollment complaint) — search guidance shared | ❌ |
 | No CAP named, CAPs assigned — clarification requested | ❌ (stays open) |
 | No CAP assigned, contact (MDO or YP) found | ❌ |
 | No CAP assigned, neither MDO nor YP found | ✅ |
 | Named CAP not found, contact (MDO or YP) found | ❌ |
 | Named CAP not found, neither MDO nor YP found | ✅ |
 | AIS fields partially complete — guided to update | ❌ |
-# SOP-3: Final Assessment Locked in Comprehensive Assessment Program (CAP)
 
-> SOP-2 is reserved for a different, not-yet-defined topic and is intentionally skipped here.
+---
+---
+
+# SOP-3: Final Assessment Locked in Comprehensive Assessment Program (CAP)
 
 ## Purpose
 Handle cases where a user reports that the Final Assessment of a Comprehensive Assessment
 Program (CAP) is locked or inaccessible.
-
-**Not implemented in this pass** (pending confirmation of the real mechanism to use):
-- Sharing the CAP name as a clickable hyperlink — no tool in this codebase returns a
-  content link, and doing so would contradict the "never fabricate a link" rule below.
-- Per-child-course technical-issue detection and an "Engineering Excel" ticket update —
-  no such integration exists; this branch is also unreachable in the reference chatbot
-  flow this SOP was adapted from (`flows/mode_b_cap_not_visible.yaml`), so it is skipped
-  here too rather than half-implemented.
-- A dedicated ticket-raising tool with structured fields (`issue_type`, `affected_resources`,
-  etc.). The only ticket mechanism implemented anywhere in this codebase is the graph's
-  native `escalate=true` + free-text `reason`, which is what STEP 1A and STEP 5B below use.
-
-## STEP 0 — Check Whether the CAP/Assessment Name Is Already Mentioned
-
-Before calling any tool, check the user's own ticket message for a specific CAP
-(Comprehensive Assessment Program) or course name they are facing the issue with.
-
-| Condition | Action |
-|---|---|
-| CAP/course name present in the message | → STEP 1 |
-| CAP/course name NOT present | Do **not** call `get_user_cbp_plan` or any other tool yet. Ask the user the question below and wait for their reply. Once named, → STEP 1. |
-
-**User Message (when the name is missing):**
-> "Could you please share the name of the CAP (Comprehensive Assessment Program) or course
-> whose Final Assessment you are facing this issue with?"
 
 ---
 
@@ -628,10 +702,13 @@ Before calling any tool, check the user's own ticket message for a specific CAP
 ```
 get_assigned_cap_courses(email = <user_email>)
 ```
-Calls the admin "assigned courses" API (`POST /api/supportportal/admin/user/v2/assignedcourses/{user_id}`,
-body `{"courseCategory": "Comprehensive Assessment Program"}`), already filtered to CAPs —
-no `isApar` inference needed. `caps` are the user's assigned CAP entries — `plan_id` is the
-CAP DO_ID, `course_name` is the CAP name.
+Call this immediately regardless of whether the message names a CAP — do NOT ask the user
+to name it first. Asking before checking is pointless when they might have zero CAPs
+assigned at all, in which case there'd be nothing to name. Calls the admin "assigned
+courses" API (`POST /api/supportportal/admin/user/v2/assignedcourses/{user_id}`, body
+`{"courseCategory": "Comprehensive Assessment Program"}`), already filtered to CAPs — no
+`isApar` inference needed. `caps` are the user's assigned CAP entries — `plan_id` is the CAP
+DO_ID, `course_name` is the CAP name.
 
 **If `found: false`.** Resolved. Close.
 > "We could not verify your profile at this time; please try again later."
@@ -643,7 +720,11 @@ CAP DO_ID, `course_name` is the CAP name.
 | Empty | → STEP 1A |
 | Exactly 1 entry | Use it → STEP 2 |
 | Multiple entries, user names a specific CAP that matches exactly 1 (case-insensitive, partial match either direction) | Use that match → STEP 2 |
-| Multiple entries, no CAP named or no unique match | Default to `caps[0]` → STEP 2 |
+| Multiple entries, no CAP named or no unique match | `needs_clarification=true` — do NOT guess which one they mean (see message below) |
+
+**User Message (ambiguous, multiple entries)**:
+> "Please share the CAP name and CAP link, along with the issue you are facing, so we can
+> investigate further."
 
 > No content link/URL is available from this API's response — do not fabricate one. The
 > "never invent a link" rule in Constraints still applies; CAP-link sharing remains
@@ -653,16 +734,10 @@ CAP DO_ID, `course_name` is the CAP name.
 
 ## STEP 1A — No CAP Assigned
 
-**Outcome:** Resolved — close after sharing contact (or escalate if none found).
-
-**User Message:**
-> "Upon checking, we found that no Comprehensive Assessment Program (CAP) is currently
-> assigned to your profile.
->
-> Kindly connect with your department for CAP assignment."
-
-**[TOOL CALL]** `get_user_profile(email = <user_email>)` (if `ministry_or_state` isn't
-already known), then:
+**[TOOL CALL]**
+```
+get_user_profile(email = <user_email>)   # designation, organization
+```
 ```
 get_mdo_details(email = <user_email>)
 ```
@@ -670,22 +745,39 @@ If not available:
 ```
 get_yp_am_details(ministry_or_state = <user_profile.ministry_or_state>)
 ```
-Masked-placeholder-token handling is identical to SOP-1 STEP 5.
+Masked-placeholder-token handling is identical to SOP-1 STEP 5. Share Name and Email only —
+never Mobile.
 
-**If either contact found**, share Name/Email and close politely.
+**If either contact found.** Resolved. Close. Use EXACTLY this message (fill in
+`[Designation]` and `[Organization]` with the real values from `get_user_profile`):
+> "With reference to your concern regarding the locked Final Assessment in CAP, we would
+> like to inform you that there is currently no CAP mapped to the designation
+> "[Designation]" under the organization [Organization].
+>
+> To create and assign the appropriate CAP for your designation, kindly reach out to your
+> MDO. Your MDO will create the appropriate CAP for your designation and assign it to your
+> profile.
+>
+> **Name:** [MDO Admin Name, else YP/AM Name]
+> **Email:** [MDO Admin Email, else YP/AM Email]"
+
 **If neither found**, escalate natively (`escalate=true`). Tell the user their issue has been
 logged and escalated to the support team, and a specialist will assist them shortly.
 
 ---
 
-## STEP 2 — Verify CAP Enrollment
+## STEP 2 — Verify CAP Enrollment and Completion
 
 **[TOOL CALL]**
 ```
 get_user_enrollments(email = <user_email>, content_id = <CAP DO_ID from STEP 1>)
 ```
-`course_name: null` → not enrolled → STEP 2A. `course_name` present (regardless of
-`completed`) → enrolled → STEP 3.
+
+| Condition | Action |
+|---|---|
+| `course_name: null` (not enrolled) | → STEP 2A |
+| `course_name` present, `completed: false` or `certificate_issued: false` | Enrolled, CAP itself not yet complete → STEP 3 |
+| `course_name` present, `completed: true` AND `certificate_issued: true` | The CAP/Final Assessment itself is ALREADY complete → STEP 2B. This check happens regardless of what the user's message claims ("limit exceeded", "locked", etc.) — always verify real completion status first. |
 
 ## STEP 2A — CAP Assigned But Not Enrolled
 
@@ -694,6 +786,31 @@ get_user_enrollments(email = <user_email>, content_id = <CAP DO_ID from STEP 1>)
 > '[cap_name]' is not yet enrolled.
 >
 > Kindly enroll in the assigned CAP to unlock the Final Assessment."
+
+## STEP 2B — CAP Itself Already Completed (Certificate Issued)
+
+**[TOOL CALL]**
+```
+get_cap_hierarchy(cap_id = <CAP DO_ID from STEP 1>)   # -> assessment_child_id
+```
+```
+get_assessment_attempt_count(email = <user_email>, assessment_identifier = <assessment_child_id if not null, otherwise the CAP DO_ID as fallback>)
+```
+Do **not** pass the CAP's own DO_ID directly when an `assessment_child_id` exists — the
+retake-count API is scoped to the specific Assessment resource, not the CAP container, and
+returns a server error if given the wrong id.
+
+**Outcome:** Resolved. Close. Use EXACTLY this message (fill in `[CAP Name]` from STEP 1,
+`[Number of Attempts]` from `remaining_attempts`):
+> "Upon verification, we found that the CAP [CAP Name] has already been completed, and the
+> certificate has also been generated.
+>
+> However, if you still wish to re-attempt the assessment, you have [Number of Attempts]
+> attempts remaining. Kindly open the assessment and retry it as required."
+
+**If `get_assessment_attempt_count` returns `found: false`.** NO ticket. Resolved. Close.
+> "We were unable to verify your assessment attempt details at this time. Kindly try again
+> in a few minutes."
 
 ---
 
@@ -716,14 +833,14 @@ Each child also carries a derived `resource_type`, classified from its
 | anything else, any other `mime_type` | **Non-SCORM** |
 
 The tool also returns `assessment_child_id` — the identifier of the `Assessment`
-child, or `null` if none was found. Carry this forward for STEP 5B.
+child, or `null` if none was found. Carry this forward for STEP 2B / STEP 5B.
 
 ---
 
 ## STEP 4 — Validate Child Course Certificate Status
 
 For **each child with `resource_type` of `SCORM` or `Non-SCORM`** from STEP 3
-(skip the `Assessment` child, if any — it is validated separately in STEP 5B, not
+(skip the `Assessment` child, if any — it is validated separately, not
 as a completion prerequisite):
 ```
 get_user_enrollments(email = <user_email>, content_id = <child course identifier>)
@@ -795,6 +912,12 @@ guidance into a single proactive message instead.
 Reply reports the assessment attempt limit being exceeded → STEP 5B.
 Reply describes any other error → STEP 5C.
 
+This branch is only ever reached by a genuine second reply on an already-open ticket
+(detected the same way any Zoho continuation reply is) — it cannot be simulated by manually
+resubmitting through the test UI with the same ticket id; that does not faithfully reproduce
+the real ingestion path. Logically sound and consistent with STEP 2B's pattern, but not
+independently verified end-to-end.
+
 ## STEP 5B — Assessment Limit Exceeded → Verify Before Ticketing
 
 **[TOOL CALL]**
@@ -814,9 +937,11 @@ no confirmation step.
 > "We have verified that the assessment attempt limit has been exceeded. A support ticket
 > has been raised and shared with the concerned team for further investigation."
 
-**`limit_exceeded: false`.** NO ticket. Resolved. Close. Fill in `[remaining_attempts]`:
-> "Upon verification, you still have `[remaining_attempts]` attempt(s) remaining. Kindly
-> retry the assessment."
+**`limit_exceeded: false`.** NO ticket. Resolved. Close. Fill in `[Number of Attempts]` from
+`remaining_attempts`, `[CAP Name]` from STEP 1:
+> "Upon verification, we found that you still have [Number of Attempts] attempts remaining
+> for the CAP [CAP Name], and the assessment is currently incomplete. Kindly retry the
+> assessment and complete it."
 
 ## STEP 5C — Any Other Error
 
@@ -830,16 +955,15 @@ Close the conversation politely.
 
 ---
 
-## 
-
-Outcome Rules — Quick Reference
+## SOP-3 Outcome Rules — Quick Reference
 
 | Scenario | Escalate? |
 |----------|:-------------:|
-| CAP/course name not yet mentioned (STEP 0 clarifying question) | ❌ |
+| Multiple CAPs assigned, unclear which one (STEP 1 clarifying question) | ❌ |
 | No CAP assigned, contact (MDO or YP) found | ❌ |
 | No CAP assigned, neither MDO nor YP found | ✅ |
 | CAP not enrolled | ❌ |
+| CAP itself already completed (certificate issued) | ❌ |
 | Pending child courses | ❌ |
 | All child courses complete and certified | ❌ |
 | Attempt-count check failed (API error) | ❌ |
