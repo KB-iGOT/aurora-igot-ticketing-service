@@ -58,6 +58,32 @@ from app.core.utils.ticket_tracker import ticket_tracker
 _EMAIL_RE  = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _MOBILE_RE = re.compile(r"(?:\+?91[-\s]?)?[6-9]\d{9}\b")
 
+# Context cues used to tell which of several emails/mobiles mentioned in a ticket
+# is the NEW one the user wants registered vs. the OLD one being replaced. Tickets
+# often mention both in one sentence, e.g. "still showing x@old.com ... the
+# updated mail id is y@new.com" — purely regex-based, never sent to the LLM.
+_NEW_CUES = re.compile(
+    r"\b(?:new|updated?|change(?:d)?|switch(?:ed)?|register(?:ed)?|correct)\b",
+    re.IGNORECASE,
+)
+_OLD_CUES = re.compile(
+    r"\b(?:old|previous|existing|current(?:ly)?|still|showing|shows|"
+    r"not\s+function(?:al|ing)?|not\s+working|no\s+longer|inactive)\b",
+    re.IGNORECASE,
+)
+_CONTEXT_WINDOW = 60
+
+
+def _classify_contact_context(raw_message: str, start: int) -> str:
+    """Classify a matched email/mobile as 'new', 'old', or 'unknown' from the
+    nearest NEW/OLD cue word appearing before it in the raw text."""
+    window = raw_message[max(0, start - _CONTEXT_WINDOW):start]
+    new_pos = max((m.start() for m in _NEW_CUES.finditer(window)), default=-1)
+    old_pos = max((m.start() for m in _OLD_CUES.finditer(window)), default=-1)
+    if new_pos == old_pos == -1:
+        return "unknown"
+    return "new" if new_pos > old_pos else "old"
+
 
 def _recover_new_contact(raw_message: str, owner_email: str) -> str | None:
     """Recover the real "new" email/mobile the user wants to update to from the
@@ -71,16 +97,40 @@ def _recover_new_contact(raw_message: str, owner_email: str) -> str | None:
     because the value they need is the NEW contact the user is asking to
     switch to — which is never the ticket owner's own (already known) email
     and only ever appears in the free-text message.
+
+    When a ticket mentions BOTH the old and new contact (very common — "my
+    profile still shows X, please update it to Y"), naively excluding the
+    owner's known email and taking "the other one" can return the OLD contact
+    instead of the new one, e.g. when the owner's known email IS the new one,
+    or isn't mentioned at all. So we first prefer whichever candidate has an
+    explicit "new"-style cue word near it, and only fall back to the
+    owner-exclusion heuristic when the context is ambiguous.
     """
     raw_message = raw_message or ""
-    emails = _EMAIL_RE.findall(raw_message)
-    others = [e for e in emails if e.strip().lower() != (owner_email or "").strip().lower()]
-    if others:
-        return others[-1]
-    if emails:
-        return emails[-1]
-    mobiles = _MOBILE_RE.findall(raw_message)
-    return mobiles[-1] if mobiles else None
+    owner_norm = (owner_email or "").strip().lower()
+
+    def _pick(pattern: "re.Pattern[str]") -> str | None:
+        matches = list(pattern.finditer(raw_message))
+        if not matches:
+            return None
+        tagged = [(m.group(0), _classify_contact_context(raw_message, m.start())) for m in matches]
+
+        new_tagged = [v for v, tag in tagged if tag == "new"]
+        if new_tagged:
+            return new_tagged[-1]
+
+        old_values = {v.strip().lower() for v, tag in tagged if tag == "old"}
+        candidates = [v for v, _ in tagged if v.strip().lower() != owner_norm and v.strip().lower() not in old_values]
+        if candidates:
+            return candidates[-1]
+
+        candidates = [v for v, _ in tagged if v.strip().lower() != owner_norm]
+        if candidates:
+            return candidates[-1]
+
+        return tagged[-1][0]
+
+    return _pick(_EMAIL_RE) or _pick(_MOBILE_RE)
 
 
 def _plan_step(ticket_id: str, node: str, detail: str, **extra) -> dict:

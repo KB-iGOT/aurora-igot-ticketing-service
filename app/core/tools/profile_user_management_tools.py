@@ -313,13 +313,14 @@ def validate_new_contact_domain(new_email: str) -> str:
         domains = resp.json().get("result", {}).get("domains", [])
         whitelisted = [d.strip().lower() for d in domains if isinstance(d, str)]
         return json.dumps({
-            "new_email": "{{NEW_CONTACT}}",
             "is_whitelisted": domain in whitelisted,
-            "_spoc_replacements": {"{{NEW_CONTACT}}": new_email},
         })
     except Exception as e:
         logger.error(f"[profile_user_management_tools] validate_new_contact_domain error: {e}")
-        return json.dumps({"is_whitelisted": False, "error": str(e)})
+        # Do NOT default is_whitelisted to False here — that would be indistinguishable
+        # from a genuine "domain not approved" result and cause SOP-A2 STEP 2 to tell the
+        # user, confidently and incorrectly, that a real domain isn't registered.
+        return json.dumps({"is_whitelisted": False, "lookup_failed": True, "error": str(e)})
 
 
 # ── SOP-A2 STEP 3 — duplicate-registration check for the NEW contact ────────
@@ -359,28 +360,28 @@ def check_contact_registered(new_contact: str) -> str:
 
         if not content:
             return json.dumps({
-                "new_contact": "{{NEW_CONTACT}}",
                 "contact_type": "email" if is_email else "mobile",
                 "is_registered": False,
-                "_spoc_replacements": {"{{NEW_CONTACT}}": contact},
             })
 
         user = content[0]
         return json.dumps({
-            "new_contact": "{{NEW_CONTACT}}",
             "contact_type": "email" if is_email else "mobile",
             "is_registered": True,
             "matched_user_id": user.get("id"),
             "matched_rootOrgId": user.get("rootOrgId"),
             "matched_rootOrgName": user.get("rootOrgName"),
             "matched_status": user.get("status"),
-            "_spoc_replacements": {"{{NEW_CONTACT}}": contact},
         }, indent=2)
     except Exception as e:
         logger.error(f"[profile_user_management_tools] check_contact_registered error: {e}")
+        # Do NOT default is_registered to False here — that would be indistinguishable
+        # from a genuine "not registered" result and cause SOP-A2 STEP 3 to tell the user,
+        # confidently and incorrectly, that an already-taken contact is available.
         return json.dumps({
             "contact_type": "email" if is_email else "mobile",
             "is_registered": False,
+            "lookup_failed": True,
             "error": str(e),
         })
 

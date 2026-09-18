@@ -124,7 +124,30 @@ CRITICAL CLASSIFICATION RULES & PROCESS:
    - If none of the defined sub-categories for that category clearly matches the issue, leave sub_category as an empty string "".
    - If category is "general", set sub_category to "other".
 
-4. CONFIDENCE SCORING:
+4. EXTERNAL PORTAL OVERRIDE (check this BEFORE finalizing the category — it takes priority
+   over the surface-level action described, e.g. "update my email", "my learning hours are
+   wrong"):
+   - Shiksha Path is a separate portal run by the Directorate of Training, CBDT — Karmayogi
+     Bharat/DoPT does not manage or operate it. If the message explicitly names Shiksha Path
+     (also "Shiksha", "ShikshaPath", "shiksha-path", or a CBDT-branded variant such as
+     "cbdt-karmayogi-shikshapath") as the portal the issue occurred on — regardless of whether
+     the actual complaint is an email/mobile update, profile update, or learning hours issue —
+     classify category="recognition_and_engagement", sub_category="Learning Hours Issue -
+     Shiksha Path". Every ticket naming this portal resolves the same way (redirect the user to
+     that team), independent of the specific action being attempted, so do not classify it
+     under profile_and_user_management or any other category just because the described action
+     (e.g. an email update) matches that category's usual sub-categories.
+   - Similarly, if the message names SPARROW as the external portal where a registration,
+     update, or data-reflection issue occurred (not "APAR Training Plan" visibility within
+     iGOT itself) -> category="recognition_and_engagement", sub_category="Learning Hours Issue
+     - SPARROW / APAR".
+   - Apply these overrides ONLY when the message explicitly names Shiksha Path or SPARROW as
+     the portal in question — never infer them from a generic profile/email update request
+     that doesn't name an external portal.
+   - When this override applies, treat it as a clear, unambiguous match: score confidence
+     0.9 or higher.
+
+5. CONFIDENCE SCORING:
    - Score your confidence strictly from 0.0 to 1.0 based on clarity and certainty of the match.
    - A score below 0.75 means the issue is ambiguous, contradictory, or lacks enough information and should be escalated to a human agent.
 
@@ -2355,6 +2378,27 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "asking how to do it, reporting an error during the update, or reporting that the update\n"
     "failed because the new contact is 'already registered'.\n\n"
 
+    "Before anything else — portal check. This entire SOP (including 'already registered')\n"
+    "  is scoped to the core iGOT Karmayogi account only.\n"
+    "  The message names Shiksha Path (also 'Shiksha', 'ShikshaPath', or a CBDT-branded\n"
+    "    variant such as 'cbdt-karmayogi-shikshapath') as the portal where they registered\n"
+    "    or are trying to update their Email ID / Mobile Number -> NO ticket. Resolved.\n"
+    "    Close. Do NOT call validate_new_contact_domain, check_contact_registered, or\n"
+    "    get_enrollment_summary — those check the iGOT Karmayogi user directory, which has\n"
+    "    no bearing on a Shiksha Path account. Tell the user, formally: Shiksha Path is\n"
+    "    managed by the Directorate of Training, CBDT; Karmayogi Bharat and DoPT do not\n"
+    "    manage or operate the Shiksha Path portal; ask them to coordinate directly with the\n"
+    "    Directorate of Training / CBDT team for any Shiksha Path-related issues; share the\n"
+    "    support email aed4.training@incometax.gov.in.\n"
+    "  The message names SPARROW/APAR as the portal where they registered or are trying to\n"
+    "    update their Email ID / Mobile Number -> NO ticket. Resolved. Close. Do NOT call\n"
+    "    validate_new_contact_domain, check_contact_registered, or get_enrollment_summary.\n"
+    "    Tell the user, formally, that SPARROW/APAR is a separate external system not\n"
+    "    managed by Karmayogi Bharat, and that account/contact-detail changes there must be\n"
+    "    raised with SPARROW's own support team (support-sparrow@gov.in).\n"
+    "  Otherwise (no external portal named — the default case, this is about the user's own\n"
+    "    iGOT Karmayogi account) -> continue below.\n\n"
+
     "Before STEP 1: check the ticket message text.\n"
     "  Reports NOT receiving an OTP while updating their Email ID / Mobile Number (and does\n"
     "    NOT ask a fresh 'how do I update' question) -> skip directly to STEP 3.1.1 below.\n"
@@ -2369,8 +2413,13 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "    mobile -> STEP 3 (mobile numbers have no domain to validate — skip STEP 2).\n\n"
 
     "STEP 2: [TOOL] validate_new_contact_domain(new_email=<the new email from STEP 1>)\n"
-    "  is_whitelisted = true -> STEP 3.\n"
-    "  is_whitelisted = false -> STEP 2A.\n\n"
+    "  lookup_failed = true -> the whitelist check itself errored (timeout/API failure) — this\n"
+    "    is NOT a verified 'not whitelisted' result. Never tell the user the domain is\n"
+    "    unregistered on this basis. Retry the tool call once; still lookup_failed=true ->\n"
+    "    escalate=true. Reason: 'Unable to verify email domain whitelist status due to a\n"
+    "    tool/API error.'\n"
+    "  lookup_failed = false, is_whitelisted = true -> STEP 3.\n"
+    "  lookup_failed = false, is_whitelisted = false -> STEP 2A.\n\n"
 
     "STEP 2A — Domain Not Whitelisted. NO ticket. Close.\n"
     "  [TOOL] get_user_profile(email=<ticket owner's own email>) — the ticket owner's OWN\n"
@@ -2389,27 +2438,14 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "      for the user's organization.'\n\n"
 
     "STEP 3: [TOOL] check_contact_registered(new_contact=<the new email/mobile from STEP 1>)\n"
-    "  is_registered = false -> STEP 3.1.\n"
-    "  is_registered = true -> STEP 3.2 (confirm it is genuinely a DIFFERENT account before\n"
-    "    treating it as a duplicate-registration case).\n\n"
-
-    "STEP 3.2 — Confirm the Matched Account Isn't the Ticket Owner's Own.\n"
-    "  check_contact_registered matches ANY account already using that contact — including,\n"
-    "  when the user has simply re-sent their own current Email ID / Mobile Number unchanged,\n"
-    "  the ticket owner's OWN account. Never assume a match means 'another account' without\n"
-    "  checking this first.\n"
-    "  [TOOL] get_user_profile(email=<ticket owner's own email>) — skip this call if it was\n"
-    "    already made earlier in this turn; reuse that result instead. Its 'id' field is the\n"
-    "    ticket owner's own user id.\n"
-    "  matched_user_id (from STEP 3) == the ticket owner's own id from get_user_profile\n"
-    "    -> STEP 3.3 (it's their own account — not a duplicate).\n"
-    "  matched_user_id != the ticket owner's own id -> STEP 4 (genuinely a different account).\n\n"
-
-    "STEP 3.3 — New Contact Is Already the Ticket Owner's Own Current Contact. NO ticket.\n"
-    "  Close. Resolved. Tell the user, formally: the Email ID / Mobile Number they provided\n"
-    "  is already the one currently associated with their own account, so no update is\n"
-    "  needed; ask them to share a different Email ID / Mobile Number if they intended to\n"
-    "  update to something else.\n\n"
+    "  lookup_failed = true -> the registration check itself errored (timeout/API failure) —\n"
+    "    this is NOT a verified 'not registered' result. Never tell the user the contact is\n"
+    "    available on this basis. Retry the tool call once; still lookup_failed=true ->\n"
+    "    escalate=true. Reason: 'Unable to verify whether the new Email ID/Mobile Number is\n"
+    "    already registered due to a tool/API error.'\n"
+    "  lookup_failed = false, is_registered = false -> STEP 3.1.\n"
+    "  lookup_failed = false, is_registered = true -> STEP 4 (already registered — gather\n"
+    "    details, inform the user of the impact, confirm, then escalate to a human).\n\n"
 
     "STEP 3.1 — Not Registered. NO ticket. Close.\n"
     "  Resolved. Tell the user the Email ID / Mobile Number they shared is available. Then,\n"
@@ -2439,9 +2475,8 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "      YP/SPOC contact instead. YP/SPOC not found -> escalate=true. Reason: 'User not\n"
     "      receiving OTP; no MDO Admin or YP/SPOC contact found for their organization.'\n\n"
 
-    "STEP 4 — Registered to a Different Account. First pass: gather details, then ask for\n"
-    "  confirmation. (Only reached from STEP 3.2 once confirmed the match is NOT the ticket\n"
-    "  owner's own account.)\n"
+    "STEP 4 — Already Registered. First pass: gather details, then ask for confirmation.\n"
+    "  (Reached directly from STEP 3 once is_registered = true.)\n"
     "  [TOOL] get_enrollment_summary(user_id=<matched_user_id from STEP 3>) — enrollment\n"
     "  counts for the OTHER account already linked to this contact. This data (and the other\n"
     "  account's org/user_id) is for the INTERNAL escalation note only — never name, quote,\n"
@@ -2460,8 +2495,10 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "         - Access to that account will no longer be available.\n"
     "         - All existing learning records will remain associated with your current\n"
     "           account after the update.\n"
-    "    3. Restate for confirmation: Current Email ID: <ticket owner's own email>. Email ID /\n"
-    "       Mobile Number to be updated: <the new contact from STEP 1>.\n"
+    "    3. Restate for confirmation: Current Email ID: <ticket owner's own email>. Do NOT\n"
+    "       restate the new Email ID / Mobile Number value itself — refer to it only by type\n"
+    "       (\"the new Email ID\" / \"the new Mobile Number\") using the one matching term from\n"
+    "       STEP 1, never the actual value and never the combined phrase.\n"
     "    4. Ask them to confirm (e.g. reply 'Yes') whether they would like to proceed with\n"
     "       this change.\n"
     "  Stop — wait for the user's reply.\n\n"
@@ -2478,7 +2515,8 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "  escalate=true. The escalation reason MUST include (for the human agent's reference —\n"
     "  pull every value from the STEP 3/STEP 4 tool results, never invent one):\n"
     "    - Ticket owner's user id and current email.\n"
-    "    - New Email ID / Mobile Number requested.\n"
+    "    - New Email ID / Mobile Number requested — the actual value, exactly as the user gave\n"
+    "      it in their ticket message (STEP 1); it is not present in the tool results.\n"
     "    - Confirmation that the user reviewed and confirmed the update.\n"
     "    - The other account's organization (matched_rootOrgName) and enrollment counts\n"
     "      (enrolled_count, in_progress_count, completed_count) from get_enrollment_summary.\n"
@@ -2487,15 +2525,16 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "  shared with the concerned team for further processing.\n\n"
 
     "SOP-A2 Outcome Rules — Quick Reference:\n"
+    "  Portal named is Shiksha Path or SPARROW/APAR (not iGOT Karmayogi)  -> no ticket\n"
     "  No new contact given yet                              -> no ticket (ask for it)\n"
+    "  Domain whitelist check fails after retry                -> ticket\n"
     "  Domain not whitelisted, MDO or YP/SPOC found            -> no ticket\n"
     "  Domain not whitelisted, neither MDO nor YP/SPOC found    -> ticket\n"
     "  Not registered                                          -> no ticket\n"
     "  Not registered, OTP not received, MDO or YP/SPOC found  -> no ticket\n"
     "  Not registered, OTP not received, neither found          -> ticket\n"
-    "  Registered, matched account is the ticket owner's own    -> no ticket\n"
-    "  Registered to a different account, user declines          -> no ticket\n"
-    "  Registered to a different account, user confirms          -> ticket\n\n"
+    "  Already registered, user declines                        -> no ticket\n"
+    "  Already registered, user confirms                        -> ticket\n\n"
 
     "=============================================================\n"
     "CONSTRAINTS\n"
@@ -2506,13 +2545,14 @@ PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT = (
     "  use the TARGET transfer organization.\n"
     "- In SOP-A2, always look up the MDO/YP for the ticket OWNER's own organization — never\n"
     "  the new (unregistered or duplicate) contact.\n"
+    "- In SOP-A2, the 'already registered' escalation (STEP 4) is valid ONLY for the core\n"
+    "  iGOT Karmayogi account. Never run it, or any of STEP 1-4's tool calls, for a ticket\n"
+    "  that names Shiksha Path or SPARROW/APAR as the portal in question — see the portal\n"
+    "  check above.\n"
     "- In SOP-A2, never generate, send, or verify an OTP yourself — only guide the user\n"
     "  through the UI or point them to their MDO/YP for assistance.\n"
     "- In SOP-A2, never reveal the other (already-registered) account's identity, org, or\n"
     "  enrollment details to the end user — those are for the internal escalation note only.\n"
-    "- In SOP-A2, never treat check_contact_registered's is_registered=true as 'another\n"
-    "  account' without first running STEP 3.2 — the matched account may be the ticket\n"
-    "  owner's own (they re-sent their current Email ID / Mobile Number unchanged).\n"
     "- In SOP-A2, STEP 1 already determines whether the new contact is an email or a mobile\n"
     "  number — in every customer-facing draft, use only that one matching term ('Email ID'\n"
     "  or 'Mobile Number'), never the combined 'Email ID / Mobile Number' phrase. The combined\n"
