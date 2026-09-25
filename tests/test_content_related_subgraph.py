@@ -16,6 +16,7 @@ from app.core.tools.enrolment_tools import get_enrolment_tools
 from app.core.tools.stub_tools import get_stub_tools
 from app.core.utils.prompt_templates import (
     ENROLMENT_ISSUES_SYSTEM_PROMPT,
+    RATING_FEEDBACK_ISSUE_SYSTEM_PROMPT,
     STUB_SUBGRAPH_SYSTEM_PROMPT,
 )
 
@@ -32,6 +33,11 @@ class TestIsImplemented:
 
         assert subgraph._is_implemented({"sub_category": "enrolment_issues"}) is True
 
+    def test_rating_feedback_issue_is_implemented(self):
+        subgraph = ContentRelatedSubgraph()
+
+        assert subgraph._is_implemented({"sub_category": "unable_to_submit_rating_feedback"}) is True
+
     def test_other_sub_categories_are_stubbed(self):
         subgraph = ContentRelatedSubgraph()
 
@@ -40,7 +46,6 @@ class TestIsImplemented:
             "content_resource_not_opening",
             "event_related_issue",
             "certificate_issue",
-            "unable_to_submit_rating_feedback",
             "",
         ]:
             assert subgraph._is_implemented({"sub_category": sub_category}) is False
@@ -61,6 +66,16 @@ class TestSystemPrompt:
         prompt = subgraph.system_prompt(state)
 
         assert prompt == ENROLMENT_ISSUES_SYSTEM_PROMPT.format(
+            email="unknown", main_category="content_related_issue"
+        )
+
+    def test_rating_feedback_issue_uses_dedicated_prompt(self):
+        subgraph = ContentRelatedSubgraph()
+        state = {"sub_category": "unable_to_submit_rating_feedback", "main_category": "content_related_issue"}
+
+        prompt = subgraph.system_prompt(state)
+
+        assert prompt == RATING_FEEDBACK_ISSUE_SYSTEM_PROMPT.format(
             email="unknown", main_category="content_related_issue"
         )
 
@@ -93,6 +108,13 @@ class TestGetTools:
         tools = subgraph.get_tools({"sub_category": "enrolment_issues"})
 
         assert {t.name for t in tools} == {t.name for t in get_enrolment_tools()}
+
+    def test_rating_feedback_issue_returns_no_tools(self):
+        subgraph = ContentRelatedSubgraph()
+
+        tools = subgraph.get_tools({"sub_category": "unable_to_submit_rating_feedback"})
+
+        assert tools == []
 
     def test_other_sub_category_returns_stub_tools(self):
         subgraph = ContentRelatedSubgraph()
