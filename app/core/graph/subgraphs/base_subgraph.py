@@ -186,13 +186,26 @@ class BaseSubgraph(ABC):
             if history:
                 lines = []
                 for m in history:
-                    role = "User" if m.get("role") == "user" else "Agent"
-                    masked_content = mask_pii_default(m.get('content', ''))
-                    lines.append(f"  [{role}] {masked_content}")
+                    role_type = m.get("role")
+                    author = m.get("author")
+                    raw_content = m.get("content", "")
+                    masked_content = mask_pii_default(raw_content)
+
+                    if role_type == "internal_note":
+                        tag = f"Internal Note: {author or 'L1 Agent'}"
+                    elif role_type == "agent":
+                        tag = f"Agent: {author or 'Support'}"
+                    else:
+                        tag = f"User: {author or 'User'}"
+
+                    lines.append(f"  [{tag}] {masked_content}")
+
                 convo_text = (
                     "\n\n[CONTINUATION — this is a follow-up to an open ticket]\n"
                     "Conversation so far:\n" + "\n".join(lines) +
-                    "\n\nThe user's latest message (above as 'User Message') is a reply to the agent's last question."
+                    "\n\nNote: Items tagged as [Internal Note] are internal staff notes for team diagnostic context only. "
+                    "Under no circumstances should you quote or disclose internal staff notes to the user.\n"
+                    "The user's latest message is a reply to the ongoing conversation."
                 )
 
         messages = [
