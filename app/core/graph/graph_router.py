@@ -27,6 +27,7 @@ Incoming payload from user / any interface:
   6. Return API response.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -70,7 +71,7 @@ from app.core.utils.constants import RESTRICT_TO_EMAIL_CHANNEL
 from app.core.utils.kafka_queue import produce_ticket
 from app.core.utils.ticket_tracker import STAGE_QUEUED, ticket_tracker
 from app.core.utils.token_tracker import token_tracker
-from app.services.zoho_service import get_cleaned_ticket_details
+from app.services.zoho_service import get_cleaned_ticket_details, get_ticket_conversations
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -101,9 +102,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _build_ticket_dict(email: str, message: Any, passed_ticket_id: str | None = None) -> tuple[dict, bool, str | None]:
+async def _build_ticket_dict(
+    email: str,
+    message: Any,
+    passed_ticket_id: str | None = None,
+    conversations: list[dict] | None = None,
+) -> tuple[dict, bool, str | None]:
     """
-    Check ES for an open clarification ticket.
+    Check ES for an open clarification ticket or inspect Zoho conversation history.
     Returns:
       (ticket_dict, is_continuation, existing_ticket_id)
     """
@@ -128,8 +134,11 @@ async def _build_ticket_dict(email: str, message: Any, passed_ticket_id: str | N
     except Exception as e:
         logger.warning(f"[graph_router] ES check failed (proceeding as new): {e}")
 
+    # Prioritize Zoho Desk conversation history, falling back to ES stored messages
+    stored_messages = list(conversations) if conversations else list((open_ticket or {}).get("messages") or [])
+
+    is_reply = False
     if open_ticket:
-        is_reply = False
         if passed_ticket_id and open_ticket.get("ticket_id") == passed_ticket_id:
             # Explicit ticket_id match means it's a continuation
             is_reply = True
@@ -144,59 +153,77 @@ async def _build_ticket_dict(email: str, message: Any, passed_ticket_id: str | N
             except Exception as e:
                 logger.warning(f"[graph_router] Continuation disambiguation failed: {e}")
 
-        if is_reply:
-            # ── Build continuation state ──────────────────────────────────────
-            existing_ticket_id = open_ticket.get("ticket_id", target_ticket_id)
-            stored_messages    = list(open_ticket.get("messages") or [])
+    # Check if Zoho conversation history indicates prior agent/user exchange
+    if not is_reply and conversations:
+        has_prior_agent_interaction = any(
+            c.get("role") in ("agent", "internal_note") for c in conversations
+        )
+        if has_prior_agent_interaction:
+            is_reply = True
+            logger.info(f"[graph_router] Continuation detected via Zoho Desk conversations history for {target_ticket_id}")
 
-            # Append the new user message
+    if is_reply:
+        # ── Build continuation state ──────────────────────────────────────
+        existing_ticket_id = open_ticket.get("ticket_id", target_ticket_id) if open_ticket else target_ticket_id
+
+        # Append the new user message if not already present in stored_messages
+        if not stored_messages or stored_messages[-1].get("content") != message:
             stored_messages.append({
+                "type":      "thread",
                 "role":      "user",
+                "author":    f"{email} (User)",
                 "content":   message,
                 "timestamp": _now_iso(),
+                "is_public": True,
             })
 
-            ticket_dict = {
-                "ticket_id":            existing_ticket_id,
-                "interaction_id":       existing_ticket_id,
-                "email":                email,
-                "message":              message,
-                "is_continuation":      True,
-                "conversation_messages": stored_messages,
-                # Restore routing info from stored ticket
-                "category":             open_ticket.get("category", "general"),
-                "main_category":        open_ticket.get("main_category", "general"),
-                "sub_category":         open_ticket.get("sub_category", ""),
-                "sub_category_label":   open_ticket.get("sub_category_label", ""),
-                "route_to":             open_ticket.get("route_to", "general_query_subgraph"),
-                "sop_categories":       [],
-                "confidence":           1.0,  # Trust stored routing for continuations
-                "retry_count":          0,
-                "max_retries":          3,
-                "quality_reroute_count": 0,
-                "graph_plan": [{
-                    "node":      "graph_router",
-                    "detail":    f"Continuation detected. Resuming ticket '{existing_ticket_id}'. "
-                                 f"Routing to '{open_ticket.get('route_to')}'.",
-                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                }],
-            }
-            logger.info(f"[graph_router] Continuation for ticket={existing_ticket_id}")
-            return ticket_dict, True, existing_ticket_id
+        ticket_dict = {
+            "ticket_id":            existing_ticket_id,
+            "interaction_id":       existing_ticket_id,
+            "email":                email,
+            "message":              message,
+            "is_continuation":      True,
+            "conversation_messages": stored_messages,
+            # Restore routing info from stored ticket if available
+            "category":             (open_ticket or {}).get("category", "general"),
+            "main_category":        (open_ticket or {}).get("main_category", "general"),
+            "sub_category":         (open_ticket or {}).get("sub_category", ""),
+            "sub_category_label":   (open_ticket or {}).get("sub_category_label", ""),
+            "route_to":             (open_ticket or {}).get("route_to", "general_query_subgraph"),
+            "sop_categories":       [],
+            "confidence":           1.0 if open_ticket else 0.8,  # Trust stored routing for continuations
+            "retry_count":          0,
+            "max_retries":          3,
+            "quality_reroute_count": 0,
+            "graph_plan": [{
+                "node":      "graph_router",
+                "detail":    f"Continuation detected. Resuming ticket '{existing_ticket_id}'. "
+                             f"Routing to '{(open_ticket or {}).get('route_to', 'general_query_subgraph')}'.",
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+            }],
+        }
+        logger.info(f"[graph_router] Continuation for ticket={existing_ticket_id}")
+        return ticket_dict, True, existing_ticket_id
 
     # ── New ticket ────────────────────────────────────────────────────────────
     new_id = target_ticket_id
+    if not stored_messages or stored_messages[-1].get("content") != message:
+        stored_messages.append({
+            "type":      "thread",
+            "role":      "user",
+            "author":    f"{email} (User)",
+            "content":   message,
+            "timestamp": _now_iso(),
+            "is_public": True,
+        })
+
     ticket_dict = {
         "ticket_id":    new_id,
         "interaction_id": new_id,
         "email":        email,
         "message":      message,
         "is_continuation": False,
-        "conversation_messages": [{
-            "role":      "user",
-            "content":   message,
-            "timestamp": _now_iso(),
-        }],
+        "conversation_messages": stored_messages,
         "retry_count":           0,
         "max_retries":           3,
         "quality_reroute_count": 0,
@@ -266,7 +293,17 @@ async def process_ticket_sync(req: dict[str, Any]):
         
     message = req.get("message")
 
-    ticket_dict, is_continuation, existing_id = await _build_ticket_dict(email, message, ticket_id)
+    # Fetch conversations if ticket_id is provided
+    conversations = []
+    if ticket_id:
+        try:
+            conversations = await get_ticket_conversations(ticket_id)
+        except Exception as e:
+            logger.warning(f"[process] Failed to fetch conversations for {ticket_id}: {e}")
+
+    ticket_dict, is_continuation, existing_id = await _build_ticket_dict(
+        email, message, ticket_id, conversations=conversations
+    )
     tid = ticket_dict["ticket_id"]
     logger.info(f"[process] ticket_id={tid} continuation={is_continuation}")
 
@@ -507,10 +544,13 @@ async def ingest_ticket(request: Request):
         raise HTTPException(status_code=400, detail="id is required in the payload")
 
     # --------------------------------------------------
-    # Fetch & Clean Zoho Ticket Details
+    # Fetch & Clean Zoho Ticket Details and Conversations in Parallel
     # --------------------------------------------------
     try:
-        cleaned_ticket_data = await get_cleaned_ticket_details(ticket_id)
+        cleaned_ticket_data, conversations = await asyncio.gather(
+            get_cleaned_ticket_details(ticket_id),
+            get_ticket_conversations(ticket_id),
+        )
     except Exception as e:
         logger.error(f"[ingest] Failed to fetch ticket details for {ticket_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch ticket details: {e}")
@@ -518,7 +558,9 @@ async def ingest_ticket(request: Request):
     # --------------------------------------------------
     # Build Ticket Dict & Enqueue
     # --------------------------------------------------
-    ticket_dict, is_continuation, existing_id = await _build_ticket_dict(email, cleaned_ticket_data, ticket_id)
+    ticket_dict, is_continuation, existing_id = await _build_ticket_dict(
+        email, cleaned_ticket_data, ticket_id, conversations=conversations
+    )
     tid = ticket_dict["ticket_id"]
 
     ticket_data = {

@@ -352,3 +352,119 @@ async def ensure_aurora_tag(ticket_id: str) -> dict:
     )
 
     return result
+
+
+def is_system_or_bounce(item: dict) -> bool:
+    """Detect automated delivery failure / system mailer daemon messages."""
+    author = item.get("author") or {}
+    author_name = str(author.get("name") or "").lower()
+    from_addr = str(item.get("fromEmailAddress") or "").lower()
+    summary = str(item.get("summary") or "").lower()
+
+    if "mailer-daemon" in author_name or "mailer-daemon" in from_addr:
+        return True
+    if "mail delivery software" in summary or "could not be delivered" in summary:
+        return True
+    return False
+
+
+async def get_ticket_conversations_raw(ticket_id: str) -> dict:
+    """Fetches raw conversations JSON from Zoho Desk API."""
+    access_token = await get_valid_access_token()
+    url = f"{ZOHO_DESK_URL}/api/v1/tickets/{ticket_id}/conversations"
+    headers = {
+        "orgId": ZOHO_ORG_ID,
+        "Authorization": f"Zoho-oauthtoken {access_token}"
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_ticket_conversations(ticket_id: str, max_turns: int = 7) -> list[dict]:
+    """
+    Fetches, cleans, filters, and sorts conversations (threads and comments)
+    for a specific ticket.
+    Returns the last `max_turns` messages in chronological order (oldest -> newest).
+    """
+    try:
+        raw_data = await get_ticket_conversations_raw(ticket_id)
+    except Exception as e:
+        logger.warning(f"[zoho] Failed to fetch conversations for ticket {ticket_id}: {e}")
+        return []
+
+    data = raw_data.get("data", [])
+    if not isinstance(data, list):
+        return []
+
+    parsed_items = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        # 1. Filter out bounce and system emails
+        if is_system_or_bounce(item):
+            continue
+
+        # 2. Skip initial ticket description thread (already in ticket details)
+        if item.get("isDescriptionThread") is True:
+            continue
+
+        item_type = item.get("type", "thread")
+        timestamp = (
+            item.get("commentedTime")
+            or item.get("createdTime")
+            or item.get("modifiedTime")
+            or ""
+        )
+
+        if item_type == "comment":
+            raw_content = item.get("content") or item.get("encodedContent") or ""
+            clean_content = extract_email_body(raw_content) if raw_content else ""
+            if not clean_content:
+                continue
+
+            commenter = item.get("commenter") or {}
+            author_name = commenter.get("name") or "L1 Support Agent"
+            is_public = item.get("isPublic", False)
+            role = "agent" if is_public else "internal_note"
+
+            parsed_items.append({
+                "type": "comment",
+                "role": role,
+                "author": f"{author_name} (L1 Agent)",
+                "content": clean_content,
+                "timestamp": timestamp,
+                "is_public": is_public,
+            })
+
+        elif item_type == "thread":
+            direction = str(item.get("direction") or "").lower()
+            author = item.get("author") or {}
+            author_name = author.get("name") or ("User" if direction == "in" else "Agent")
+            role = "user" if direction == "in" else "agent"
+
+            raw_content = item.get("content") or item.get("summary") or ""
+            if ("<" in raw_content and ">" in raw_content):
+                clean_content = extract_email_body(raw_content)
+            else:
+                clean_content = raw_content.strip()
+
+            if not clean_content:
+                continue
+
+            parsed_items.append({
+                "type": "thread",
+                "role": role,
+                "author": f"{author_name} ({'User' if role == 'user' else 'Agent'})",
+                "content": clean_content,
+                "timestamp": timestamp,
+                "is_public": True,
+            })
+
+    # Sort chronologically (oldest first -> newest last)
+    parsed_items.sort(key=lambda x: x.get("timestamp") or "")
+
+    # Apply sliding window of max_turns
+    return parsed_items[-max_turns:]
