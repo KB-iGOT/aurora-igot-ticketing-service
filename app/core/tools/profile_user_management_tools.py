@@ -764,6 +764,9 @@ def check_contact_registered(new_contact: str) -> str:
             "matched_rootOrgId": user.get("rootOrgId"),
             "matched_rootOrgName": user.get("rootOrgName"),
             "matched_status": user.get("status"),
+            # Stripped by the subgraph; notify_user swaps the token for the real value
+            # so the LLM never has to see or echo the PII-masked contact.
+            "_spoc_replacements": {"{{NEW_CONTACT}}": contact},
         }, indent=2)
     except Exception as e:
         logger.error(f"[profile_user_management_tools] check_contact_registered error: {e}")

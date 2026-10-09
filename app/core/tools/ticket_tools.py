@@ -80,7 +80,9 @@ def notify_user(state: TicketState) -> TicketState:
     response  = state.get("final_response", "")
 
     # Unmask any ticket-isolated SPOC placeholders (e.g. {{MDO_ADMIN_EMAIL}} -> real email)
-    spoc_map = state.get("spoc_replacements") or {}
+    spoc_map = dict(state.get("spoc_replacements") or {})
+    if state.get("email"):
+        spoc_map.setdefault("{{USER_EMAIL}}", state["email"])
     if spoc_map and response:
         for placeholder, real_val in spoc_map.items():
             response = response.replace(placeholder, str(real_val))

@@ -260,6 +260,9 @@ class BaseSubgraph(ABC):
         ]
 
         accumulated_results = list(state.get("tool_results") or [])
+        # Built once per execute pass so tokens from an earlier tool call (e.g.
+        # {{NEW_CONTACT}}) survive later tool calls in the same pass.
+        spoc_map = dict(state.get("spoc_replacements") or {})
 
         try:
             for _ in range(8):
@@ -312,7 +315,6 @@ class BaseSubgraph(ABC):
                     result_str = result if isinstance(result, str) else json.dumps(result, default=str)
 
                     # Extract _spoc_replacements if present in tool result
-                    spoc_map = dict(state.get("spoc_replacements") or {})
                     if isinstance(result_str, str) and "_spoc_replacements" in result_str:
                         try:
                             parsed_res = json.loads(result_str)
@@ -343,7 +345,7 @@ class BaseSubgraph(ABC):
         )
         return {
             **state,
-            "spoc_replacements": spoc_map if 'spoc_map' in locals() else state.get("spoc_replacements"),
+            "spoc_replacements": spoc_map,
             "tool_results": accumulated_results,
             "graph_plan": list(state.get("graph_plan") or []) + [step]
         }

@@ -411,21 +411,22 @@ no update is needed; ask them to share a different one if they meant to update t
 else.
 
 **STEP 4 — Registered to a Different Account.** `get_enrollment_summary(user_id=<matched_user_id>)`
-for the OTHER account's enrollment counts — for the internal escalation note only, never
-shared with the end user. First reply: explain the contact is linked to another account, that
-proceeding will deactivate that account while the user's own learning records stay put,
-restate current vs. new contact, and ask for explicit confirmation. Stop and wait for the
-reply.
+for the OTHER account's enrollment counts — internal escalation note only, never shared with
+the end user. First reply (`needs_clarification`): state the contact is already associated with
+another account; list the impact (that account deactivated, its access lost, learning records
+stay with the current account); then "Kindly review the below details and confirm whether they
+are correct" with `Current Email ID` and `<Email ID / Mobile Number> to be Updated` (filled via
+`{{USER_EMAIL}}` / `{{NEW_CONTACT}}` tokens, never the PII-masked value); close with "Please
+confirm whether you would like us to raise a support request for this change." Stop and wait.
 
 **STEP 4 (continuation).**
   Affirmative → STEP 4.4.
   Negative → Resolved. Close — no changes made, no ticket.
   Ambiguous → ask again for a clear Yes/No (no ticket yet).
 
-**STEP 4.4 — Confirmed.** `escalate=true`. Escalation note must include: owner's user id and
-current email, the new contact requested, confirmation received, the other account's org and
-enrollment counts, and confirmation the user understands the other account will be
-deactivated. Tell the user the request has been recorded and shared with the team.
+**STEP 4.4 — Confirmed.** `escalate=true`. Escalation note: owner's user id and current email,
+contact type requested, user's confirmation, the other account's org and enrollment counts,
+and that the user understands the other account will be deactivated. Silent human_queue hand-off.
 
 ## SOP-A2 Outcome Rules — Quick Reference
 

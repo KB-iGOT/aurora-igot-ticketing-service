@@ -561,6 +561,30 @@ class TestCheckContactRegistered:
         assert call_kwargs.kwargs["json"]["request"]["filters"]["phone"] == "9876543210"
 
     @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_registered_email_exposes_new_contact_token_for_unmasking(self, mock_post):
+        mock_post.return_value = _search_response([{"id": "user-2"}])
+
+        result = json.loads(check_contact_registered.func("  taken@x.com "))
+
+        assert result["_spoc_replacements"] == {"{{NEW_CONTACT}}": "taken@x.com"}
+
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_registered_mobile_exposes_new_contact_token_for_unmasking(self, mock_post):
+        mock_post.return_value = _search_response([{"id": "user-3"}])
+
+        result = json.loads(check_contact_registered.func("9876543210"))
+
+        assert result["_spoc_replacements"] == {"{{NEW_CONTACT}}": "9876543210"}
+
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_not_registered_has_no_token(self, mock_post):
+        mock_post.return_value = _search_response([])
+
+        result = json.loads(check_contact_registered.func("free@x.com"))
+
+        assert "_spoc_replacements" not in result
+
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
     def test_not_registered(self, mock_post):
         mock_post.return_value = _search_response([])
 
@@ -838,3 +862,58 @@ class TestEmailMobileUpdateSopRouting:
 
     def test_sop_a2_points_otp_not_received_to_sop_p4(self):
         assert "EXCEPTION: a user who explicitly\nreports not receiving the OTP is SOP-P4 above instead" in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+
+class TestSopA2NoContactPlaceholders:
+    """The LLM only sees a PII-masked ticket message, so SOP-A2 must never tell it to
+    echo the new contact value — doing so leaks `<EMAIL_ADDRESS>` into customer drafts."""
+
+    def test_constraint_forbids_value_and_placeholder_tokens(self):
+        assert "NEVER write the new\n  Email ID / Mobile Number value" in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+        assert "<EMAIL_ADDRESS> / <PHONE_NUMBER> placeholder" in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+    def test_escalation_reason_no_longer_asks_for_actual_value(self):
+        assert "the actual value, exactly as the user gave" not in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+
+class TestSopA2AlreadyRegisteredConfirmation:
+    def test_confirmation_uses_unmask_tokens_after_format(self):
+        rendered = PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT.format(email="x", main_category="m")
+        assert "Current Email ID: {{USER_EMAIL}}" in rendered
+        assert "to be Updated: {{NEW_CONTACT}}" in rendered
+        assert "Please confirm whether you would like us to raise a support" in rendered
+
+
+class TestSpocReplacementsAccumulate:
+    def test_tokens_survive_later_tool_calls_in_same_execute_pass(self):
+        import json
+        from unittest.mock import MagicMock, patch
+        from langchain_core.messages import AIMessage
+        from app.core.graph.subgraphs.base_subgraph import BaseSubgraph
+
+        class _Sub(BaseSubgraph):
+            CATEGORY = "t"
+            def system_prompt(self, state): return "sys"
+            def get_tools(self, state):
+                from langchain_core.tools import tool
+                @tool
+                def first() -> str:
+                    """first"""
+                    return json.dumps({"ok": 1, "_spoc_replacements": {"{{NEW_CONTACT}}": "9999999999"}})
+                @tool
+                def second() -> str:
+                    """second"""
+                    return json.dumps({"ok": 2})
+                return [first, second]
+
+        llm = MagicMock()
+        llm.bind_tools.return_value.invoke.side_effect = [
+            AIMessage(content="", tool_calls=[
+                {"name": "first", "args": {}, "id": "1"},
+                {"name": "second", "args": {}, "id": "2"},
+            ]),
+            AIMessage(content="done"),
+        ]
+        with patch("app.core.graph.subgraphs.base_subgraph._llm_execute", llm):
+            out = _Sub().execute_node({"ticket_id": "t", "email": "a@b.c", "message": "m"})
+        assert out["spoc_replacements"]["{{NEW_CONTACT}}"] == "9999999999"
