@@ -37,6 +37,9 @@ class TicketState(TypedDict, total=False):
     is_junk:         bool     # True when message is irrelevant/greeting/spam
     junk_reason:     str      # explanation for junk classification
 
+    # ── Feature-flag skip (intake node) ───────────────────────────────────────
+    is_category_disabled: bool  # True when category is not in ENABLED_CATEGORIES or use_case is in DISABLED_USE_CASES
+
     # ── Routing ───────────────────────────────────────────────────────────────
     route_to:        str      # subgraph node name or "human_queue"
     routing_reason:  str
