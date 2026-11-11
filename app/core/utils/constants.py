@@ -29,7 +29,6 @@ ENABLED_CATEGORIES: list[str] = [
 # (no draft, no Zoho update). Other use cases under the same sub-category are unaffected.
 # Supported: "designation_update_request", "profile_completion_check", "username_change_request".
 DISABLED_USE_CASES: list[str] = [
-    "profile_completion_check",
     "username_change_request",
 ]
 

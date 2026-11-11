@@ -350,6 +350,5 @@ def test_disabled_use_cases_defaults():
     from app.core.utils.constants import DISABLED_USE_CASES
 
     assert set(DISABLED_USE_CASES) == {
-        "profile_completion_check",
         "username_change_request",
     }

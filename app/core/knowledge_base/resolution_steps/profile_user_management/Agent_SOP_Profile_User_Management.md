@@ -33,7 +33,7 @@ Verification, Designation/Group, and Profile Update Use Cases
 | `get_enrollment_summary` | `(user_id)` | Enrollment counts (In-Progress/Completed) for the OTHER account already linked to the new contact — internal escalation-note use only (SOP-A2 STEP 4.1) |
 | `check_mother_tongue_available` | `(mother_tongue_name)` | Checks a user-reported mother tongue against the platform's master language list, case-insensitive exact match (SOP-P5 STEP 1) |
 | `get_user_ehrms_details` | `(email)` | Checks whether the user's EHRMS ID / External System ID is set on their profile (SOP-P7 STEP 1) |
-| `get_profile_completion_details` | `(email)` | Checks `mandatoryFieldsExists` (overall bool) plus Profile Photo/Group/Designation individually — Cover Photo, About Me, and Username Verification are not exposed by this API at all (SOP-P12 STEP 1) |
+| `get_profile_completion_details` | `(email)` | Reads the full profile (search → User Read API) and returns `profile_completion_percentage` plus `first_name_set`, `profile_photo_set`, `cover_photo_set`, `about_me_set`, `designation_set`, `group_set`, plus `location_set`, `educational_qualifications_set`, `service_history_set` from the extended profile API `GET /api/chatbot/v2/admin/extended/all/{user_id}` (SOP-P12 STEP 1) |
 
 ---
 ---
@@ -332,24 +332,24 @@ Closing: confirm that once applied, the cover photo will be successfully updated
 
 Use Case: user reports their profile completion percentage is not showing 100%.
 
-**STEP 1.** `get_profile_completion_details(email)` -> `mandatory_fields_exists` (overall
-bool), `profile_photo_set`, `group`, `designation`. Cover Photo, About Me, and Username
-Verification status are NOT exposed by this API at all — there is no field for them.
+**STEP 1.** `get_profile_completion_details(email)` -> `profile_completion_percentage`,
+`first_name_set`, `profile_photo_set`, `cover_photo_set`,
+`about_me_set`, `designation_set`, `group_set`, `location_set`,
+`educational_qualifications_set`, `service_history_set` (the last three come from the extended
+profile API and are `null` if that call fails — treated as unknown, never listed as missing).
 
-- `mandatory_fields_exists = true` → Resolved. Close — tell the user all mandatory fields
+- `profile_completion_percentage >= 100` → Resolved. Close — tell the user all mandatory fields
   are already complete; if the percentage still isn't showing 100%, ask them to
   refresh/re-login, as it may just be a display delay.
-- `mandatory_fields_exists = false` → STEP 2.
+- `profile_completion_percentage < 100` → STEP 2.
 
-**STEP 2.** Resolved. Close — build ONE unified list, presented the same way regardless of
-what we could actually verify (never tell the user which fields we could or couldn't
-check): `profile_photo_set = false` → Profile Photo; empty `group` → Group; empty
-`designation` → Designation; and ALWAYS include Cover Photo, About Me, and Username
-Verification (never confirmed complete by this API, and `mandatory_fields_exists = false`
-means something is still incomplete). Use the SOP's own example communication verbatim —
-"We have checked your profile and found that certain details are missing. Please update the
-following details in your profile to achieve 100% profile completion:" followed by the
-list, then explain the percentage reaches 100% only once every mandatory field is updated.
+**STEP 2.** Resolved. Close — list only the fields the tool reports as missing (First Name,
+Profile Photo, Cover Photo, About Me, Designation, Group, Location
+Details, Educational Qualifications, Service History). Use the
+SOP's own example communication verbatim — "We have checked your profile and found that
+certain details are missing. Please update the following details in your profile to achieve
+100% profile completion:" followed by the list, then explain the percentage reaches 100% only
+once every mandatory field is updated.
 
 ---
 

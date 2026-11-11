@@ -797,71 +797,69 @@ class TestGetProfileCompletionDetails:
     @patch("app.core.tools.profile_user_management_tools.requests.post")
     def test_all_fields_complete(self, mock_post, mock_get):
         mock_post.return_value = _search_response([{"id": "user-1"}])
-        mock_get.return_value = _read_response({
-            "firstName": "Asha",
-            "profileCompletionPercentage": 100,
-            "profileDetails": {
-                "profileImageUrl": "https://example.com/photo.png",
-                "profileBannerUrl": "https://example.com/banner.png",
-                "verifiedKarmayogi": "true",
-                "employmentDetails": {"aboutme": "I work in govt."},
-                "profileDesignationStatus": "VERIFIED",
-                "profileGroupStatus": "VERIFIED",
-            },
-        })
+        mock_get.side_effect = [
+            _read_response({
+                "firstName": "Asha",
+                "profileCompletionPercentage": 100,
+                "profileDetails": {
+                    "profileImageUrl": "https://example.com/photo.png",
+                    "profileBannerUrl": "https://example.com/banner.png",
+                    "employmentDetails": {"aboutme": "I work in govt."},
+                    "professionalDetails": [{"designation": "Dental Technician", "group": "Honorarium-Based"}],
+                },
+            }),
+            _read_response({
+                "locationDetails": {"data": [{"state": "Assam", "district": "Baksa"}], "count": 1},
+                "educationalQualifications": {"data": [{"degree": "BTech"}], "count": 1},
+                "serviceHistory": {"data": [{"orgName": "iGoT"}], "count": 1},
+            }),
+        ]
 
         result = json.loads(get_profile_completion_details.func("asha@x.com"))
 
         assert result["found"] is True
         assert result["profile_completion_percentage"] == 100
+        assert result["first_name_set"] is True
         assert result["profile_photo_set"] is True
         assert result["cover_photo_set"] is True
-        assert result["profile_verification_verified"] is True
         assert result["about_me_set"] is True
-        assert result["designation_verified"] is True
-        assert result["group_verified"] is True
+        assert result["designation_set"] is True
+        assert result["group_set"] is True
+        assert result["location_set"] is True
+        assert result["educational_qualifications_set"] is True
+        assert result["service_history_set"] is True
 
     @patch("app.core.tools.profile_user_management_tools.requests.get")
     @patch("app.core.tools.profile_user_management_tools.requests.post")
     def test_fields_incomplete_reports_which_are_missing(self, mock_post, mock_get):
         mock_post.return_value = _search_response([{"id": "user-2"}])
-        mock_get.return_value = _read_response({
-            "firstName": "Ravi",
-            "profileCompletionPercentage": 66.8,
-            "profileDetails": {
-                "profileImageUrl": None,
-                "profileBannerUrl": None,
-                "verifiedKarmayogi": None,
-                "employmentDetails": {},
-                "profileDesignationStatus": "NOT-VERIFIED",
-                "profileGroupStatus": "NOT-VERIFIED",
-            },
-        })
+        mock_get.side_effect = [
+            _read_response({
+                "firstName": "",
+                "profileCompletionPercentage": 66.8,
+                "profileDetails": {
+                    "profileImageUrl": None,
+                    "profileBannerUrl": None,
+                    "employmentDetails": {},
+                    "professionalDetails": [],
+                },
+            }),
+            _read_response({}),
+        ]
 
         result = json.loads(get_profile_completion_details.func("ravi@x.com"))
 
         assert result["found"] is True
         assert result["profile_completion_percentage"] == 66.8
+        assert result["first_name_set"] is False
         assert result["profile_photo_set"] is False
         assert result["cover_photo_set"] is False
-        assert result["profile_verification_verified"] is False
         assert result["about_me_set"] is False
-        assert result["designation_verified"] is False
-        assert result["group_verified"] is False
-
-    @patch("app.core.tools.profile_user_management_tools.requests.get")
-    @patch("app.core.tools.profile_user_management_tools.requests.post")
-    def test_verified_karmayogi_string_false_treated_as_not_verified(self, mock_post, mock_get):
-        mock_post.return_value = _search_response([{"id": "user-3"}])
-        mock_get.return_value = _read_response({
-            "firstName": "Meera",
-            "profileCompletionPercentage": 90,
-            "profileDetails": {"verifiedKarmayogi": "false"},
-        })
-
-        result = json.loads(get_profile_completion_details.func("meera@x.com"))
-
-        assert result["profile_verification_verified"] is False
+        assert result["designation_set"] is False
+        assert result["group_set"] is False
+        assert result["location_set"] is False
+        assert result["educational_qualifications_set"] is False
+        assert result["service_history_set"] is False
 
     @patch("app.core.tools.profile_user_management_tools.requests.post")
     def test_exception_is_handled(self, mock_post):
@@ -871,6 +869,224 @@ class TestGetProfileCompletionDetails:
 
         assert result["found"] is False
         assert "error" in result
+
+
+class TestProfileCompletionAdditionalFields:
+    """first_name_set + extended-profile sections (location, education, service history)."""
+
+    _BASE_PROFILE = {
+        "firstName": "Asha",
+        "profileCompletionPercentage": 80,
+        "profileDetails": {},
+    }
+
+    @staticmethod
+    def _section(n):
+        return {"data": [{"id": i} for i in range(n)], "count": n}
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_extended_sections_all_set(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-1"}])
+        mock_get.side_effect = [
+            _read_response(self._BASE_PROFILE),
+            _read_response({
+                "locationDetails": {"data": [{"state": "Assam", "district": "Baksa"}], "count": 1},
+                "educationalQualifications": self._section(2),
+                "serviceHistory": self._section(1),
+            }),
+        ]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["first_name_set"] is True
+        assert result["location_set"] is True
+        assert result["educational_qualifications_set"] is True
+        assert result["service_history_set"] is True
+        assert "/api/chatbot/v2/admin/extended/all/user-1" in mock_get.call_args_list[1][0][0]
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_extended_sections_empty_or_absent_are_false(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-2"}])
+        mock_get.side_effect = [
+            _read_response(self._BASE_PROFILE),
+            _read_response({
+                "locationDetails": self._section(0),
+                "educationalQualifications": None,
+            }),
+        ]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["location_set"] is False
+        assert result["educational_qualifications_set"] is False
+        assert result["service_history_set"] is False
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_extended_api_failure_returns_none_not_false(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-3"}])
+        mock_get.side_effect = [
+            _read_response(self._BASE_PROFILE),
+            Exception("extended api down"),
+        ]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["found"] is True
+        assert result["location_set"] is None
+        assert result["educational_qualifications_set"] is None
+        assert result["service_history_set"] is None
+
+    @pytest.mark.parametrize("first_name,expected", [("Asha", True), ("   ", False), (None, False), ("", False)])
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_first_name_set(self, mock_post, mock_get, first_name, expected):
+        mock_post.return_value = _search_response([{"id": "user-4"}])
+        mock_get.side_effect = [
+            _read_response({"firstName": first_name, "profileDetails": {}}),
+            _read_response({}),
+        ]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["first_name_set"] is expected
+
+
+class TestProfileCompletionAboutMeAndPrimaryDetails:
+    """About Me comes from employmentDetails; Designation AND Group from professionalDetails[0]."""
+
+    @staticmethod
+    def _run(mock_post, mock_get, profile_details):
+        mock_post.return_value = _search_response([{"id": "user-9"}])
+        mock_get.side_effect = [
+            _read_response({"firstName": "Asha", "profileDetails": profile_details}),
+            _read_response({}),
+        ]
+        return json.loads(get_profile_completion_details.func("asha@x.com"))
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_about_me_read_from_employment_details(self, mock_post, mock_get):
+        result = self._run(mock_post, mock_get, {"employmentDetails": {"aboutme": "test"}})
+        assert result["about_me_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_photo_and_cover_read_from_profile_details(self, mock_post, mock_get):
+        result = self._run(mock_post, mock_get, {
+            "profileImageUrl": "https://x/p.png", "profileBannerUrl": "https://x/b.png",
+        })
+        assert result["profile_photo_set"] is True
+        assert result["cover_photo_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_group_and_designation_both_present(self, mock_post, mock_get):
+        result = self._run(mock_post, mock_get, {
+            "professionalDetails": [{"designation": "Dental Technician", "group": "Honorarium-Based"}],
+        })
+        assert result["designation_set"] is True
+        assert result["group_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_only_designation_present(self, mock_post, mock_get):
+        result = self._run(mock_post, mock_get, {"professionalDetails": [{"designation": "Clerk", "group": ""}]})
+        assert result["designation_set"] is True
+        assert result["group_set"] is False
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_only_group_present(self, mock_post, mock_get):
+        result = self._run(mock_post, mock_get, {"professionalDetails": [{"group": "Group A"}]})
+        assert result["designation_set"] is False
+        assert result["group_set"] is True
+
+    @pytest.mark.parametrize("professional", [None, [], "not-a-list"])
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_professional_details_missing_or_malformed(self, mock_post, mock_get, professional):
+        result = self._run(mock_post, mock_get, {"professionalDetails": professional})
+        assert result["designation_set"] is False
+        assert result["group_set"] is False
+
+
+class TestLocationSetHelper:
+    def test_none_extended_is_unknown(self):
+        assert put._location_set(None) is None
+
+    def test_no_entries_is_false(self):
+        assert put._location_set({}) is False
+        assert put._location_set({"locationDetails": {"data": []}}) is False
+
+    def test_state_and_district_is_true(self):
+        extended = {"locationDetails": {"data": [{"state": "Assam", "district": "Baksa"}]}}
+        assert put._location_set(extended) is True
+
+    def test_state_only_is_false(self):
+        extended = {"locationDetails": {"data": [{"state": "Assam", "district": ""}]}}
+        assert put._location_set(extended) is False
+
+    def test_district_only_is_false(self):
+        extended = {"locationDetails": {"data": [{"state": "", "district": "Baksa"}]}}
+        assert put._location_set(extended) is False
+
+    def test_whitespace_only_is_false(self):
+        extended = {"locationDetails": {"data": [{"state": "  ", "district": " "}]}}
+        assert put._location_set(extended) is False
+
+    def test_any_complete_entry_is_enough(self):
+        extended = {"locationDetails": {"data": [{"state": "Assam"}, {"state": "Goa", "district": "North Goa"}]}}
+        assert put._location_set(extended) is True
+
+
+class TestFetchExtendedProfileSections:
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    def test_calls_extended_endpoint_and_returns_response(self, mock_get):
+        mock_get.return_value = _read_response({"serviceHistory": {"data": [1], "count": 1}})
+
+        result = put._fetch_extended_profile_sections("user-1")
+
+        assert result == {"serviceHistory": {"data": [1], "count": 1}}
+        assert mock_get.call_args[0][0].endswith("/api/chatbot/v2/admin/extended/all/user-1")
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    def test_failure_returns_none(self, mock_get):
+        mock_get.side_effect = requests.RequestException("boom")
+        assert put._fetch_extended_profile_sections("user-1") is None
+
+
+class TestSopP12Prompt:
+    def test_prompt_lists_all_profile_completion_fields(self):
+        for flag in (
+            "first_name_set", "profile_photo_set", "cover_photo_set", "about_me_set",
+            "designation_set", "group_set", "location_set",
+            "educational_qualifications_set", "service_history_set",
+        ):
+            assert flag in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+    def test_prompt_no_longer_checks_profile_verification(self):
+        assert "profile_verification_verified" not in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+    def test_prompt_no_longer_uses_old_verified_flags(self):
+        assert "designation_verified" not in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+        assert "group_verified" not in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+    def test_prompt_treats_null_extended_fields_as_unknown(self):
+        assert "treat null as unknown" in PROFILE_USER_MANAGEMENT_SYSTEM_PROMPT
+
+
+class TestExtendedSectionSetHelper:
+    def test_none_extended_is_unknown(self):
+        assert put._extended_section_set(None, "locationDetails") is None
+
+    def test_missing_key_is_false(self):
+        assert put._extended_section_set({}, "locationDetails") is False
+
+    def test_non_empty_data_is_true(self):
+        assert put._extended_section_set({"serviceHistory": {"data": [1]}}, "serviceHistory") is True
 
 
 # ── Convenience list ─────────────────────────────────────────────────────────

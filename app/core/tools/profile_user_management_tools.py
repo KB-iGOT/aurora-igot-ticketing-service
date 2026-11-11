@@ -44,9 +44,10 @@ Covers SOP workflows from Agent_SOP_Profile_User_Management.md:
 
   SOP-P12 Profile Update - Profile Completion Not Showing 100%
           get_profile_completion_details -> STEP 1 profile_completion_percentage
-                                     + Profile Photo / Cover Photo / Profile
-                                     Verification / About Me / Designation /
-                                     Group (two-step: search then read)
+                                     + First Name / Profile Photo / Cover Photo
+                                     / About Me / Designation / Group (Read API)
+                                     + Location / Education / Service History
+                                     (extended profile API)
 
   SOP-P8  Profile Update - Service History Update
           get_own_profile_details (alias get_user_profile) -> STEP 1 current
@@ -970,6 +971,46 @@ def get_user_ehrms_details(email: str) -> str:
 
 # ── SOP-P12 — Profile Completion Not Showing 100% ───────────────────────────
 
+def _fetch_extended_profile_sections(user_id: str) -> dict | None:
+    """Fetch the extended profile sections (locationDetails,
+    educationalQualifications, serviceHistory) for a user.
+
+    GET /api/chatbot/v2/admin/extended/all/{user_id}. Each section is shaped
+    {"data": [...], "count": N}. Returns the result.response dict, or None if
+    the call fails — callers must treat None as "could not check", never as
+    "section is empty".
+    """
+    url = f"{IGOT_API_HOST_URL}/api/chatbot/v2/admin/extended/all/{user_id}"
+    headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": CONTENT_TYPE_JSON}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("result", {}).get("response", {}) or {}
+    except Exception as e:
+        logger.error(f"[profile_user_management_tools] _fetch_extended_profile_sections error: {e}")
+        return None
+
+
+def _extended_section_set(extended: dict | None, key: str) -> bool | None:
+    """True if the section has at least one entry, False if empty/absent,
+    None if the extended-profile call failed (unknown)."""
+    if extended is None:
+        return None
+    section = extended.get(key) or {}
+    return bool(section.get("data"))
+
+
+def _location_set(extended: dict | None) -> bool | None:
+    """True if at least one location entry has BOTH state and district filled,
+    False otherwise, None if the extended-profile call failed (unknown)."""
+    if extended is None:
+        return None
+    entries = (extended.get("locationDetails") or {}).get("data") or []
+    return any(
+        isinstance(e, dict) and (e.get("state") or "").strip() and (e.get("district") or "").strip()
+        for e in entries
+    )
+
 @tool
 def get_profile_completion_details(email: str) -> str:
     """Check which mandatory profile fields are set, for a user reporting their
@@ -980,35 +1021,46 @@ def get_profile_completion_details(email: str) -> str:
 
     Field mapping (from GET /api/user/private/v1/read/{user_id}):
       profile_completion_percentage -> profileCompletionPercentage
-      Profile Photo                 -> profileDetails.profileImageUrl (present = set)
+      First Name                    -> firstName (top-level; present = set)
+      Profile Photo                -> profileDetails.profileImageUrl (present = set)
       Cover Photo                   -> profileDetails.profileBannerUrl (present = set)
-      Profile Verification          -> profileDetails.verifiedKarmayogi ("False" or falsy = not verified)
       About Me                      -> profileDetails.employmentDetails.aboutme (present = set)
-      Designation                   -> profileDetails.profileDesignationStatus ("VERIFIED" = done)
-      Group                         -> profileDetails.profileGroupStatus ("VERIFIED" = done)
+      Designation                   -> profileDetails.professionalDetails[0].designation (present = set)
+      Group                         -> profileDetails.professionalDetails[0].group (present = set)
+
+    Extended profile sections come from GET /api/chatbot/v2/admin/extended/all/{user_id}
+    (each is {"data": [...], "count": N}; non-empty data = set). They are null
+    when that call fails, meaning "could not check" — not "missing":
+      Location Details              -> locationDetails.data (an entry with BOTH state and district)
+      Educational Qualifications    -> educationalQualifications.data
+      Service History               -> serviceHistory.data
     """
     try:
-        _user_id, user_data, error = _fetch_user_id_and_profile_or_error(email)
+        user_id, user_data, error = _fetch_user_id_and_profile_or_error(email)
         if error:
             return error
 
+        extended = _fetch_extended_profile_sections(user_id)
+
         profile_details = user_data.get("profileDetails") or {}
         employment = profile_details.get("employmentDetails") or {}
-        verified_karmayogi = profile_details.get("verifiedKarmayogi")
+        professional_list = profile_details.get("professionalDetails")
+        primary = professional_list[0] if isinstance(professional_list, list) and professional_list else {}
 
         return json.dumps({
             "email": USER_EMAIL_PLACEHOLDER,
             "found": True,
             "firstName": user_data.get("firstName"),
             "profile_completion_percentage": user_data.get("profileCompletionPercentage"),
+            "first_name_set": bool((user_data.get("firstName") or "").strip()),
             "profile_photo_set": bool(profile_details.get("profileImageUrl")),
             "cover_photo_set": bool(profile_details.get("profileBannerUrl")),
-            "profile_verification_verified": bool(
-                verified_karmayogi and str(verified_karmayogi).lower() != "false"
-            ),
             "about_me_set": bool(employment.get("aboutme")),
-            "designation_verified": profile_details.get("profileDesignationStatus") == "VERIFIED",
-            "group_verified": profile_details.get("profileGroupStatus") == "VERIFIED",
+            "designation_set": bool((primary.get("designation") or "").strip()),
+            "group_set": bool((primary.get("group") or "").strip()),
+            "location_set": _location_set(extended),
+            "educational_qualifications_set": _extended_section_set(extended, "educationalQualifications"),
+            "service_history_set": _extended_section_set(extended, "serviceHistory"),
             "_spoc_replacements": {USER_EMAIL_PLACEHOLDER: email},
         })
     except Exception as e:
