@@ -939,6 +939,101 @@ class TestProfileCompletionAdditionalFields:
         assert result["educational_qualifications_set"] is None
         assert result["service_history_set"] is None
 
+    @staticmethod
+    def _no_content_response():
+        """HTTP 204: raise_for_status passes, body is empty so .json() raises."""
+        resp = MagicMock()
+        resp.status_code = 204
+        resp.raise_for_status.return_value = None
+        resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+        return resp
+
+    @staticmethod
+    def _empty_200_response():
+        """HTTP 200 with an empty/HTML body: a malformed response, not a 204."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status.return_value = None
+        resp.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+        return resp
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_204_without_designation_reports_all_three_missing(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-5"}])
+        mock_get.side_effect = [_read_response(self._BASE_PROFILE), self._no_content_response()]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["found"] is True
+        assert result["designation_set"] is False
+        assert result["location_set"] is False
+        assert result["educational_qualifications_set"] is False
+        assert result["service_history_set"] is False
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_204_with_designation_marks_service_history_set(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-6"}])
+        profile = {**self._BASE_PROFILE, "profileDetails": {"professionalDetails": [{"designation": "Clerk"}]}}
+        mock_get.side_effect = [_read_response(profile), self._no_content_response()]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["designation_set"] is True
+        assert result["location_set"] is False
+        assert result["educational_qualifications_set"] is False
+        assert result["service_history_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_designation_overrides_empty_extended_service_history(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-7"}])
+        profile = {**self._BASE_PROFILE, "profileDetails": {"professionalDetails": [{"designation": "Clerk"}]}}
+        mock_get.side_effect = [_read_response(profile), _read_response({"serviceHistory": self._section(0)})]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["service_history_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_designation_set_service_history_true_even_if_extended_api_fails(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-8"}])
+        profile = {**self._BASE_PROFILE, "profileDetails": {"professionalDetails": [{"designation": "Clerk"}]}}
+        mock_get.side_effect = [_read_response(profile), Exception("extended api down")]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["location_set"] is None
+        assert result["educational_qualifications_set"] is None
+        assert result["service_history_set"] is True
+
+    @patch("app.core.tools.profile_user_management_tools._fetch_extended_profile_sections")
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_unexpected_error_while_building_result_returns_not_found(self, mock_post, mock_get, mock_extended):
+        mock_post.return_value = _search_response([{"id": "user-11"}])
+        mock_get.side_effect = [_read_response(self._BASE_PROFILE)]
+        mock_extended.side_effect = RuntimeError("boom")
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["found"] is False
+        assert result["error"] == "boom"
+
+    @patch("app.core.tools.profile_user_management_tools.requests.get")
+    @patch("app.core.tools.profile_user_management_tools.requests.post")
+    def test_200_with_empty_body_is_still_unknown_not_empty(self, mock_post, mock_get):
+        mock_post.return_value = _search_response([{"id": "user-10"}])
+        mock_get.side_effect = [_read_response(self._BASE_PROFILE), self._empty_200_response()]
+
+        result = json.loads(get_profile_completion_details.func("asha@x.com"))
+
+        assert result["location_set"] is None
+        assert result["educational_qualifications_set"] is None
+        assert result["service_history_set"] is None
+
     @pytest.mark.parametrize("first_name,expected", [("Asha", True), ("   ", False), (None, False), ("", False)])
     @patch("app.core.tools.profile_user_management_tools.requests.get")
     @patch("app.core.tools.profile_user_management_tools.requests.post")

@@ -976,15 +976,19 @@ def _fetch_extended_profile_sections(user_id: str) -> dict | None:
     educationalQualifications, serviceHistory) for a user.
 
     GET /api/chatbot/v2/admin/extended/all/{user_id}. Each section is shaped
-    {"data": [...], "count": N}. Returns the result.response dict, or None if
-    the call fails — callers must treat None as "could not check", never as
-    "section is empty".
+    {"data": [...], "count": N}. Returns the result.response dict. HTTP 204 No
+    Content (the API's answer when nothing is filled in) returns {} — an empty
+    result, so every section reads as "empty". Returns None if the call fails
+    (including a 200 with an empty/malformed body) — callers must treat None
+    as "could not check", never as "section is empty".
     """
     url = f"{IGOT_API_HOST_URL}/api/chatbot/v2/admin/extended/all/{user_id}"
     headers = {"Authorization": f"Bearer {IGOT_KEY}", "Content-Type": CONTENT_TYPE_JSON}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
+        if resp.status_code == 204:
+            return {}
         return resp.json().get("result", {}).get("response", {}) or {}
     except Exception as e:
         logger.error(f"[profile_user_management_tools] _fetch_extended_profile_sections error: {e}")
@@ -1034,6 +1038,12 @@ def get_profile_completion_details(email: str) -> str:
       Location Details              -> locationDetails.data (an entry with BOTH state and district)
       Educational Qualifications    -> educationalQualifications.data
       Service History               -> serviceHistory.data
+
+    An HTTP 204 from the extended API means nothing is filled: location and
+    education come back False. Service History is True whenever a Designation
+    is set (it is auto-fetched from the designation, so it is never reported
+    missing then, even if the extended API is empty or failed); without a
+    designation it falls back to the extended API's serviceHistory.data.
     """
     try:
         user_id, user_data, error = _fetch_user_id_and_profile_or_error(email)
@@ -1046,6 +1056,7 @@ def get_profile_completion_details(email: str) -> str:
         employment = profile_details.get("employmentDetails") or {}
         professional_list = profile_details.get("professionalDetails")
         primary = professional_list[0] if isinstance(professional_list, list) and professional_list else {}
+        designation_set = bool((primary.get("designation") or "").strip())
 
         return json.dumps({
             "email": USER_EMAIL_PLACEHOLDER,
@@ -1056,11 +1067,11 @@ def get_profile_completion_details(email: str) -> str:
             "profile_photo_set": bool(profile_details.get("profileImageUrl")),
             "cover_photo_set": bool(profile_details.get("profileBannerUrl")),
             "about_me_set": bool(employment.get("aboutme")),
-            "designation_set": bool((primary.get("designation") or "").strip()),
+            "designation_set": designation_set,
             "group_set": bool((primary.get("group") or "").strip()),
             "location_set": _location_set(extended),
             "educational_qualifications_set": _extended_section_set(extended, "educationalQualifications"),
-            "service_history_set": _extended_section_set(extended, "serviceHistory"),
+            "service_history_set": True if designation_set else _extended_section_set(extended, "serviceHistory"),
             "_spoc_replacements": {USER_EMAIL_PLACEHOLDER: email},
         })
     except Exception as e:

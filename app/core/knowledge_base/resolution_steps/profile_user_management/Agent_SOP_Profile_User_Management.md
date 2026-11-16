@@ -337,6 +337,9 @@ Use Case: user reports their profile completion percentage is not showing 100%.
 `about_me_set`, `designation_set`, `group_set`, `location_set`,
 `educational_qualifications_set`, `service_history_set` (the last three come from the extended
 profile API and are `null` if that call fails — treated as unknown, never listed as missing).
+An HTTP 204 from the extended API means nothing is filled in, so location and education are
+`false`. `service_history_set` is `true` whenever a designation is set (service history is
+auto-fetched from it); with no designation it follows the extended API's `serviceHistory`.
 
 - `profile_completion_percentage >= 100` → Resolved. Close — tell the user all mandatory fields
   are already complete; if the percentage still isn't showing 100%, ask them to
